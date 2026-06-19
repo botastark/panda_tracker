@@ -37,3 +37,10 @@ Exactly 24 bytes:
 6. Only after these checks, use the same protocol in the PBVS publisher.
 
 The numeric collision thresholds inherited from `setDefaultBehavior()` still require approval for the actual holder, stick, payload, and lab setup.
+
+
+
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
