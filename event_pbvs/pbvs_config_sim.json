@@ -1,0 +1,97 @@
+{
+  "panda_ip": "127.0.0.1",
+  "panda_command_port": 2600,
+  "panda_state_bind_ip": "127.0.0.1",
+  "panda_state_port": 6200,
+  "control_rate_hz": 100.0,
+  "kp_position": 1.5,
+  "kp_orientation": 1.5,
+  "max_linear_speed": 0.05,
+  "max_angular_speed_deg": 20.0,
+  "panda_state_timeout": 0.1,
+  "tracker_timeout": 0.1,
+  "max_tracker_position_jump": 0.05,
+  "max_tracker_angle_jump_deg": 15.0,
+  "max_enable_position_error": 0.40,
+  "max_enable_orientation_error_deg": 90.0,
+  "consecutive_valid_required": 10,
+  "dry_run": false,
+  "T_EC": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_CS": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.15
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_TS_des": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.1
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ]
+}
