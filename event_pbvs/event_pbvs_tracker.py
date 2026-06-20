@@ -498,6 +498,7 @@ class PBVSController:
         position = T_BE_state[:3, 3]
         goal_position = T_BE_goal[:3, 3]
         position_error = goal_position - position
+        
 
         rotation = T_BE_state[:3, :3]
         goal_rotation = T_BE_goal[:3, :3]
@@ -512,8 +513,17 @@ class PBVSController:
             self.config.max_angular_speed,
         )
 
-        command_position = position + linear_velocity * dt
-        command_rotation = rotation @ so3_exp(angular_velocity * dt)
+# At 100 Hz, the original horizon is about 0.01 s. This change makes each command target roughly five times farther ahead while still respecting the configured velocity direction.
+        # command_position = position + linear_velocity * dt
+        # command_rotation = rotation @ so3_exp(angular_velocity * dt)
+
+        command_horizon = 0.05
+        integration_dt = max(dt, command_horizon)
+        command_position = position + linear_velocity * integration_dt
+        command_rotation = rotation @ so3_exp(
+            angular_velocity * integration_dt
+        )
+
         command = make_transform(command_rotation, command_position)
 
         return (

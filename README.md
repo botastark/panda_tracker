@@ -17,24 +17,21 @@ python simulation/simulated_explorer.py \
   --tracker-port 6500
   --triangle-step 0.05 \
   --triangle-rotation-step-deg 10 \
-  --max-joint-speed 0.8
+  --max-joint-speed 2.0
+  --kp-position 10.0 \
+  --kp-orientation 8.0 \
+  --command-timeout 0.5
 
 
-python simulation/simulated_explorer.py \
+python simulation/simulated_explorer_holder_camera.py \
   --panda-xml mujoco_menagerie/franka_emika_panda/panda.xml \
   --pbvs-config event_pbvs/pbvs_config_sim.json \
   --ee-body hand \
-  --command-bind-ip 127.0.0.1 \
-  --command-port 2600 \
-  --state-ip 127.0.0.1 \
-  --state-port 6200 \
-  --tracker-ip 127.0.0.1 \
-  --tracker-port 6500
   --triangle-step 0.05 \
-  --triangle-rotation-step-deg 10 \
-  --max-joint-speed 1.2 \
-  --kp-position 5.0 \
-  --kp-orientation 4.0 \
+  --triangle-rotation-step-deg 15 \
+  --max-joint-speed 2.0 \
+  --kp-position 10.0 \
+  --kp-orientation 8.0 \
   --command-timeout 0.5
 
 
