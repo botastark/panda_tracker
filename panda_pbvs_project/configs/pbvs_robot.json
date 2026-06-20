@@ -1,0 +1,190 @@
+{
+  "panda_ip": "172.16.222.48",
+  "panda_command_port": 2600,
+  "panda_state_bind_ip": "0.0.0.0",
+  "panda_state_port": 6200,
+  "control_rate_hz": 100.0,
+  "kp_position": 4.0,
+  "kp_orientation": 4.0,
+  "max_linear_speed": 0.01,
+  "max_angular_speed_deg": 5.0,
+  "panda_state_timeout": 0.1,
+  "tracker_timeout": 0.1,
+  "max_tracker_position_jump": 0.05,
+  "max_tracker_angle_jump_deg": 15.0,
+  "max_enable_position_error": 0.05,
+  "max_enable_orientation_error_deg": 15.0,
+  "consecutive_valid_required": 20,
+  "workspace": {
+    "min": [
+      -0.2,
+      0.36,
+      0.05
+    ],
+    "max": [
+      0.2,
+      0.7,
+      0.55
+    ]
+  },
+  "T_EC": [
+    [
+      0,
+      0,
+      1,
+      0.2
+    ],
+    [
+      1,
+      0,
+      0,
+      0.0
+    ],
+    [
+      0,
+      1,
+      0,
+      0.08
+    ],
+    [
+      0,
+      0,
+      0,
+      1.0
+    ]
+  ],
+  "T_CS": [
+    [
+      0,
+      1,
+      0,
+      0.0
+    ],
+    [
+      0,
+      0,
+      1,
+      0.275
+    ],
+    [
+      1,
+      0,
+      0,
+      -0.2
+    ],
+    [
+      0,
+      0,
+      0,
+      1.0
+    ]
+  ],
+  "T_TS_des": [
+    [
+      1,
+      0,
+      0,
+      0.0
+    ],
+    [
+      0,
+      -1,
+      0,
+      0.0
+    ],
+    [
+      0,
+      0,
+      -1,
+      0.05
+    ],
+    [
+      0,
+      0,
+      0,
+      1.0
+    ]
+  ],
+  "tool_visualization": {
+    "T_EH": [
+      [
+        1,
+        0,
+        0,
+        0.0
+      ],
+      [
+        0,
+        1,
+        0,
+        0.0
+      ],
+      [
+        0,
+        0,
+        1,
+        0.08
+      ],
+      [
+        0,
+        0,
+        0,
+        1.0
+      ]
+    ],
+    "holder_half_size": [
+      0.055,
+      0.04,
+      0.025
+    ],
+    "holder_rgba": ".55 .55 .60 1",
+    "stick_mount_H": [
+      0.0,
+      0.0,
+      0.025
+    ],
+    "stick_radius": 0.006,
+    "support_1_mount_H": [
+      0.055,
+      -0.025,
+      0.0
+    ],
+    "support_2_mount_H": [
+      0.055,
+      0.025,
+      0.0
+    ],
+    "support_1_top_H": [
+      0.155,
+      -0.025,
+      0.0
+    ],
+    "support_2_top_H": [
+      0.155,
+      0.025,
+      0.0
+    ],
+    "rod_radius": 0.006,
+    "camera_platform_center_H": [
+      0.165,
+      0.0,
+      0.0
+    ],
+    "camera_platform_half_size": [
+      0.008,
+      0.05,
+      0.04
+    ],
+    "camera_platform_rgba": ".35 .35 .38 1",
+    "camera_half_size": [
+      0.035,
+      0.027,
+      0.02
+    ],
+    "camera_lens_axis_C": [
+      0,
+      0,
+      1
+    ]
+  }
+}

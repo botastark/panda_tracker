@@ -3,6 +3,10 @@ conda deactivate
 cd /home/bota/repos/panda_pbvs_sim
 
 
+sudo ss -lunp | grep -E ':(2600|6200|6500)\b'
+kill -CONT PID
+kill PID
+
 
 terminal1:
 python simulation/simulated_explorer.py \
