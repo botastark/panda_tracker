@@ -546,9 +546,27 @@ class PBVSController:
             diagnostics["reason"] = "no_tracker_pose"
             return T_BE_state, diagnostics
 
+        # if not self.tracker_measurement_is_valid(tracker_measurement, now):
+        #     self.state = ControlState.HOLD
+        #     self._consecutive_valid = 0
+        #     diagnostics["state"] = self.state.name
+        #     diagnostics["reason"] = "invalid_stale_or_jumping_tracker_pose"
+        #     return T_BE_state, diagnostics
+        # better recover after 1 rejected tracker sample instead of holding indefinitely until a perfect measurement arrives, which may never happen with a noisy event tracker. This also allows valid stationary measurements to recover after a jump instead of being compared forever with an old pose.
         if not self.tracker_measurement_is_valid(tracker_measurement, now):
             self.state = ControlState.HOLD
             self._consecutive_valid = 0
+
+            # Re-baseline after a rejected jump so valid stationary measurements
+            # can recover instead of being compared forever with an old pose.
+            if (
+                tracker_measurement.valid
+                and finite_transform(tracker_measurement.T_TC)
+                and now - tracker_measurement.measurement_time
+                <= self.config.tracker_timeout
+            ):
+                self._last_tracker = tracker_measurement
+
             diagnostics["state"] = self.state.name
             diagnostics["reason"] = "invalid_stale_or_jumping_tracker_pose"
             return T_BE_state, diagnostics

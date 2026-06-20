@@ -98,13 +98,33 @@ def quat_wxyz_from_rotation(rotation: np.ndarray) -> np.ndarray:
     mujoco.mju_mat2Quat(quaternion, rotation.reshape(-1))
     return quaternion
 
-
-def load_transform_config(path: Path) -> np.ndarray:
+# def load_transform_config(path: Path) -> np.ndarray:
+#     raw = json.loads(path.read_text())
+#     transform = np.asarray(raw["T_EC"], dtype=float)
+#     if transform.shape != (4, 4):
+#         raise ValueError("T_EC in the PBVS config must be 4x4.")
+#     return transform
+def load_transform_config(
+    path: Path,
+) -> tuple[np.ndarray, np.ndarray]:
     raw = json.loads(path.read_text())
-    transform = np.asarray(raw["T_EC"], dtype=float)
-    if transform.shape != (4, 4):
-        raise ValueError("T_EC in the PBVS config must be 4x4.")
-    return transform
+
+    T_EC = np.asarray(raw["T_EC"], dtype=float)
+    T_CS = np.asarray(raw["T_CS"], dtype=float)
+    T_TS_des = np.asarray(raw["T_TS_des"], dtype=float)
+
+    for name, transform in {
+        "T_EC": T_EC,
+        "T_CS": T_CS,
+        "T_TS_des": T_TS_des,
+    }.items():
+        if transform.shape != (4, 4):
+            raise ValueError(f"{name} must be 4x4.")
+
+    T_SC = np.linalg.inv(T_CS)
+    T_TC_des = T_TS_des @ T_SC
+
+    return T_EC, T_TC_des
 
 
 def create_scene_xml(panda_xml: Path) -> Path:
@@ -172,6 +192,7 @@ class CommandReceiver(threading.Thread):
         self.bind_ip = bind_ip
         self.port = port
         self.latest = latest
+        self.last_print_time = 0.0
 
     def run(self) -> None:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -183,6 +204,11 @@ class CommandReceiver(threading.Thread):
             pose = np.asarray(struct.unpack(POSE_FORMAT, data), dtype=float)
             if np.all(np.isfinite(pose)):
                 self.latest.set(pose)
+                # print("Received EE command:", np.round(pose, 3))
+                now = time.monotonic()
+                if now - self.last_print_time > 1.0:
+                    print("Received EE command:", np.round(pose, 3))
+                    self.last_print_time = now
 
 
 @dataclass
@@ -280,7 +306,8 @@ def main() -> int:
         model, mujoco.mjtObj.mjOBJ_BODY, "pbvs_triangle"
     )
     joints = discover_arm_joints(model)
-    T_EC = load_transform_config(args.pbvs_config)
+    # T_EC = load_transform_config(args.pbvs_config)
+    T_EC, T_TC_des = load_transform_config(args.pbvs_config)
 
     latest_command = LatestPoseCommand()
     CommandReceiver(args.command_bind_ip, args.command_port, latest_command).start()
@@ -288,10 +315,31 @@ def main() -> int:
     state_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tracker_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    triangle_initial_pos = np.array([0.5, 0.0, 0.4])
+    # triangle_initial_pos = np.array([0.5, 0.0, 0.4])
+    # triangle_pos = triangle_initial_pos.copy()
+    # # triangle_rpy = np.array([0.0, math.pi, math.pi])
+    # triangle_rpy = np.array([0.0, 0.0, 0.0])
+    # triangle_initial_rpy = triangle_rpy.copy()
+    T_BE_initial = body_transform(data, ee_body_id)
+    T_BC_initial = T_BE_initial @ T_EC
+
+    # Choose the board pose so that T_TC_initial == T_TC_des.
+    T_BT_initial = T_BC_initial @ np.linalg.inv(T_TC_des)
+
+    triangle_initial_pos = T_BT_initial[:3, 3].copy()
+    triangle_initial_rpy = rpy_from_rotation(
+        T_BT_initial[:3, :3]
+    )
+
     triangle_pos = triangle_initial_pos.copy()
-    triangle_rpy = np.array([0.0, math.pi, math.pi])
-    triangle_initial_rpy = triangle_rpy.copy()
+    triangle_rpy = triangle_initial_rpy.copy()
+
+    data.mocap_pos[0] = triangle_pos
+    data.mocap_quat[0] = quat_wxyz_from_rotation(
+        T_BT_initial[:3, :3]
+    )
+    mujoco.mj_forward(model, data)
+
 
     def key_callback(keycode: int) -> None:
         key = chr(keycode).upper() if 0 <= keycode < 256 else ""
@@ -336,6 +384,7 @@ def main() -> int:
     print("Simulation started.")
     print("Triangle keys: W/S A/D R/F, I/K J/L U/O, 0 reset.")
     print(f"EE body: {args.ee_body}; generated scene: {scene_xml}")
+    loop_count = 0
 
     with mujoco.viewer.launch_passive(
         model, data, key_callback=key_callback
@@ -420,16 +469,21 @@ def main() -> int:
                     (args.tracker_ip, args.tracker_port),
                 )
                 last_tracker_send = now
+            loop_count += 1
 
             if now - last_status >= 1.0:
                 smallest_singular_value = np.linalg.svd(
                     arm_jacobian, compute_uv=False
                 )[-1]
+                elapsed = now - last_status
+                loop_hz = loop_count / elapsed
                 print(
+                    f"inner_EE_error: "
                     f"|e_p|={np.linalg.norm(position_error):.4f} m, "
                     f"|e_R|={math.degrees(np.linalg.norm(orientation_error)):.2f} deg, "
                     f"sigma_min={smallest_singular_value:.4f}"
                 )
+                loop_count = 0
                 last_status = now
 
             viewer.sync()
