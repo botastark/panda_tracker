@@ -1,8 +1,8 @@
 {
   "panda_ip": "172.16.222.48",
   "panda_command_port": 2600,
-  "panda_state_bind_ip": "0.0.0.0",
-  "panda_state_port": 6200,
+  "panda_state_bind_ip": "127.0.0.1",
+  "panda_state_port": 6201,
   "control_rate_hz": 100.0,
   "kp_position": 1.0,
   "kp_orientation": 0.0,

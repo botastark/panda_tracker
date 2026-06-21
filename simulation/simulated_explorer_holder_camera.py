@@ -3,15 +3,21 @@
 Kinematic Panda simulator that mirrors explorer_safe's UDP interface.
 
 Receives:
-    port 2600, <6f: x, y, z, roll, pitch, yaw in Panda base frame
+    command port 2600, <6f: commanded x, y, z, roll, pitch, yaw
+    optional real-state port 6201, <6f: measured physical Panda EE pose
 
 Sends:
-    port 6200, <6f: simulated EE state
-    port 6500, <16d: synthetic tracker pose T_TC
+    state port 6200, <6f: simulated EE state (normal simulation mode)
+    tracker port 6500, <16d: synthetic tracker pose T_TC
 
-The simulated EE follows the commanded Cartesian pose with damped least-squares
-inverse kinematics. This is a commissioning simulator, not a torque-accurate
-digital twin.
+Without --real-state-bind-ip, the simulated EE follows Cartesian commands.
+With --real-state-bind-ip, the MuJoCo Panda mirrors the measured physical
+end-effector pose. The triangle is initialized only after the simulated
+end-effector has converged to the first fresh physical pose.
+
+Because mirror mode currently receives only a 6-DoF end-effector pose, it
+matches the camera/end-effector pose but cannot guarantee the same redundant
+joint configuration as the physical seven-joint arm.
 
 Keyboard controls for the triangle:
     W/S: triangle +/- x_B
@@ -30,7 +36,6 @@ import json
 import math
 import socket
 import struct
-import tempfile
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -526,7 +531,12 @@ def body_transform(data: mujoco.MjData, body_id: int) -> np.ndarray:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "MuJoCo Panda simulator with optional physical-robot "
+            "end-effector mirroring."
+        )
+    )
     parser.add_argument(
         "--panda-xml",
         type=Path,
@@ -540,23 +550,40 @@ def main() -> int:
         help="PBVS JSON config containing T_EC, T_CS, and T_TS_des.",
     )
     parser.add_argument("--ee-body", default="hand")
+
     parser.add_argument("--command-bind-ip", default="127.0.0.1")
     parser.add_argument("--command-port", type=int, default=2600)
+    parser.add_argument("--command-timeout", type=float, default=0.25)
+
     parser.add_argument("--state-ip", default="127.0.0.1")
     parser.add_argument("--state-port", type=int, default=6200)
+    parser.add_argument(
+        "--publish-sim-state",
+        action="store_true",
+        help=(
+            "Also publish simulated EE state while in physical mirror mode. "
+            "It is already published by default in normal simulation mode."
+        ),
+    )
+
     parser.add_argument("--tracker-ip", default="127.0.0.1")
     parser.add_argument("--tracker-port", type=int, default=6500)
+
     parser.add_argument("--damping", type=float, default=0.05)
     parser.add_argument("--max-joint-speed", type=float, default=0.4)
     parser.add_argument("--kp-position", type=float, default=3.0)
     parser.add_argument("--kp-orientation", type=float, default=2.0)
-    parser.add_argument("--command-timeout", type=float, default=0.25)
+
     parser.add_argument("--triangle-step", type=float, default=0.01)
     parser.add_argument("--triangle-rotation-step-deg", type=float, default=2.0)
+
     parser.add_argument(
         "--real-state-bind-ip",
         default=None,
-        help="Enable physical-Panda mirror mode by binding to this address.",
+        help=(
+            "Enable digital-twin mode and bind here for physical Panda "
+            "EE-state packets."
+        ),
     )
     parser.add_argument(
         "--real-state-port",
@@ -568,12 +595,54 @@ def main() -> int:
         "--real-state-timeout",
         type=float,
         default=0.5,
+        help="Maximum age in seconds of a physical-state packet.",
+    )
+    parser.add_argument(
+        "--sync-position-tolerance",
+        type=float,
+        default=0.005,
+        help="Position error required before triangle initialization, in metres.",
+    )
+    parser.add_argument(
+        "--sync-orientation-tolerance-deg",
+        type=float,
+        default=2.0,
+        help="Orientation error required before triangle initialization.",
+    )
+    parser.add_argument(
+        "--sync-consecutive-cycles",
+        type=int,
+        default=10,
+        help="Number of consecutive in-tolerance cycles required for sync.",
     )
     args = parser.parse_args()
 
+    if args.sync_consecutive_cycles < 1:
+        parser.error("--sync-consecutive-cycles must be at least 1.")
+    if args.real_state_timeout <= 0.0:
+        parser.error("--real-state-timeout must be positive.")
+    if args.sync_position_tolerance <= 0.0:
+        parser.error("--sync-position-tolerance must be positive.")
+    if args.sync_orientation_tolerance_deg <= 0.0:
+        parser.error("--sync-orientation-tolerance-deg must be positive.")
+
+    mirror_mode = args.real_state_bind_ip is not None
+    publish_sim_state = (not mirror_mode) or args.publish_sim_state
+    sync_orientation_tolerance = math.radians(
+        args.sync_orientation_tolerance_deg
+    )
+
     panda_xml = args.panda_xml.expanduser().resolve()
-    T_EC, T_CS, T_TS_des, T_TC_des, tool_visualization = load_transform_config(args.pbvs_config)
-    # scene_xml = create_scene_xml(panda_xml, args.ee_body, T_EC, T_CS)
+    config_path = args.pbvs_config.expanduser().resolve()
+
+    (
+        T_EC,
+        T_CS,
+        _T_TS_des,
+        T_TC_des,
+        tool_visualization,
+    ) = load_transform_config(config_path)
+
     scene_xml = create_scene_xml(
         panda_xml,
         args.ee_body,
@@ -581,10 +650,7 @@ def main() -> int:
         T_CS,
         tool_visualization,
     )
-    # recover from singuklaruity
-    singularity_recovery_active = False
-    last_ik_warning_time = 0.0
-    
+
     model = mujoco.MjModel.from_xml_path(str(scene_xml))
     data = mujoco.MjData(model)
 
@@ -592,39 +658,31 @@ def main() -> int:
         mujoco.mj_resetDataKeyframe(model, data, 0)
     else:
         mujoco.mj_resetData(model, data)
-    
-    # Resolve the exact joint by name.
+
+    # Preserve the existing initial joint-7 offset used by this visualization.
     joint7_id = mujoco.mj_name2id(
         model,
         mujoco.mjtObj.mjOBJ_JOINT,
         "joint7",
     )
-
     if joint7_id < 0:
         raise RuntimeError("MuJoCo joint 'joint7' was not found.")
 
     joint7_qpos_address = int(model.jnt_qposadr[joint7_id])
-
     print(
         "joint7 before:",
         math.degrees(data.qpos[joint7_qpos_address]),
         "deg",
     )
 
-    # Apply the fixed initial joint-7 rotation only once.
     data.qpos[joint7_qpos_address] += math.radians(90.0)
-
-    minimum, maximum = model.jnt_range[joint7_id]
-    margin = 0.01
-
+    joint7_minimum, joint7_maximum = model.jnt_range[joint7_id]
     data.qpos[joint7_qpos_address] = np.clip(
         data.qpos[joint7_qpos_address],
-        minimum + margin,
-        maximum - margin,
+        joint7_minimum + 0.01,
+        joint7_maximum - 0.01,
     )
-
     mujoco.mj_forward(model, data)
-
 
     print(
         "joint7 after:",
@@ -632,38 +690,108 @@ def main() -> int:
         "deg",
     )
 
-    ee_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, args.ee_body)
+    ee_body_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        args.ee_body,
+    )
     if ee_body_id < 0:
         raise ValueError(
             f"EE body {args.ee_body!r} not found. Run inspect_model.py."
         )
+
     triangle_body_id = mujoco.mj_name2id(
-        model, mujoco.mjtObj.mjOBJ_BODY, "pbvs_triangle"
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "pbvs_triangle",
     )
+    if triangle_body_id < 0:
+        raise RuntimeError("Generated body 'pbvs_triangle' was not found.")
+
+    camera_body_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "pbvs_camera",
+    )
+    tip_body_id = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "pbvs_stick_tip",
+    )
+    if camera_body_id < 0 or tip_body_id < 0:
+        raise RuntimeError("Generated camera or stick-tip body was not found.")
+
     joints = discover_arm_joints(model)
 
     latest_command = LatestPoseCommand()
-    CommandReceiver(args.command_bind_ip, args.command_port, latest_command).start()
+    latest_real_state = LatestPoseCommand()
+
+    if mirror_mode:
+        CommandReceiver(
+            args.real_state_bind_ip,
+            args.real_state_port,
+            latest_real_state,
+        ).start()
+        print(
+            "Digital-twin mode: receiving physical Panda EE state on "
+            f"{args.real_state_bind_ip}:{args.real_state_port}"
+        )
+        print(
+            "Waiting for a fresh physical pose before initializing "
+            "the triangle."
+        )
+    else:
+        CommandReceiver(
+            args.command_bind_ip,
+            args.command_port,
+            latest_command,
+        ).start()
+        print(
+            "Normal simulation mode: receiving Cartesian commands on "
+            f"{args.command_bind_ip}:{args.command_port}"
+        )
 
     state_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     tracker_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    T_BE_initial = body_transform(data, ee_body_id)
-    T_BC_initial = T_BE_initial @ T_EC
-    T_BT_initial = T_BC_initial @ np.linalg.inv(T_TC_des)
+    # In normal simulation mode, initialize the triangle immediately relative
+    # to the current simulated Panda pose. In mirror mode, keep it below the
+    # floor until the simulated EE converges to a fresh physical EE pose.
+    triangle_initialized = not mirror_mode
+    triangle_initial_pos = np.zeros(3, dtype=float)
+    triangle_initial_rpy = np.zeros(3, dtype=float)
+    triangle_pos = np.zeros(3, dtype=float)
+    triangle_rpy = np.zeros(3, dtype=float)
 
-    triangle_initial_pos = T_BT_initial[:3, 3].copy()
-    triangle_initial_rpy = rpy_from_rotation(T_BT_initial[:3, :3])
-    triangle_pos = triangle_initial_pos.copy()
-    triangle_rpy = triangle_initial_rpy.copy()
+    if triangle_initialized:
+        T_BE_initial = body_transform(data, ee_body_id)
+        T_BC_initial = T_BE_initial @ T_EC
+        T_BT_initial = T_BC_initial @ np.linalg.inv(T_TC_des)
 
-    data.mocap_pos[0] = triangle_pos
-    data.mocap_quat[0] = quat_wxyz_from_rotation(T_BT_initial[:3, :3])
+        triangle_initial_pos[:] = T_BT_initial[:3, 3]
+        triangle_initial_rpy[:] = rpy_from_rotation(
+            T_BT_initial[:3, :3]
+        )
+        triangle_pos[:] = triangle_initial_pos
+        triangle_rpy[:] = triangle_initial_rpy
+
+        data.mocap_pos[0] = triangle_pos
+        data.mocap_quat[0] = quat_wxyz_from_rotation(
+            T_BT_initial[:3, :3]
+        )
+    else:
+        data.mocap_pos[0] = np.array([0.0, 0.0, -1.0])
+        data.mocap_quat[0] = np.array([1.0, 0.0, 0.0, 0.0])
+
     mujoco.mj_forward(model, data)
 
     def key_callback(keycode: int) -> None:
+        if not triangle_initialized:
+            return
+
         key = chr(keycode).upper() if 0 <= keycode < 256 else ""
         dr = math.radians(args.triangle_rotation_step_deg)
+
         if key == "W":
             triangle_pos[0] += args.triangle_step
         elif key == "S":
@@ -697,6 +825,15 @@ def main() -> int:
     last_state_send = 0.0
     last_tracker_send = 0.0
     last_status = 0.0
+    last_waiting_print = 0.0
+
+    sync_cycles = 0
+    sync_position_error = math.inf
+    sync_orientation_error = math.inf
+    real_state_fresh = False
+
+    singularity_recovery_active = False
+    last_ik_warning_time = 0.0
 
     jacp = np.zeros((3, model.nv))
     jacr = np.zeros((3, model.nv))
@@ -704,293 +841,417 @@ def main() -> int:
     print("Simulation started.")
     print("Triangle keys: W/S A/D R/F, I/K J/L U/O, 0 reset.")
     print(f"EE body: {args.ee_body}; generated scene: {scene_xml}")
+    if mirror_mode and not publish_sim_state:
+        print(
+            "Simulated EE-state publication is disabled in mirror mode "
+            "to avoid mixing it with the physical state stream."
+        )
 
-    with mujoco.viewer.launch_passive(
-        model, data, key_callback=key_callback
-    ) as viewer:
-        while viewer.is_running():
-            now = time.monotonic()
-            dt = min(max(now - previous_time, 1e-4), 0.02)
-            previous_time = now
+    try:
+        with mujoco.viewer.launch_passive(
+            model,
+            data,
+            key_callback=key_callback,
+        ) as viewer:
+            while viewer.is_running():
+                now = time.monotonic()
+                dt = min(max(now - previous_time, 1e-4), 0.02)
+                previous_time = now
 
-            # Update triangle mocap body.
-            data.mocap_pos[0] = triangle_pos
-            data.mocap_quat[0] = quat_wxyz_from_rotation(
-                rotation_from_rpy(*triangle_rpy)
-            )
-            mujoco.mj_forward(model, data)
+                if triangle_initialized:
+                    data.mocap_pos[0] = triangle_pos
+                    data.mocap_quat[0] = quat_wxyz_from_rotation(
+                        rotation_from_rpy(*triangle_rpy)
+                    )
+                mujoco.mj_forward(model, data)
 
-            command, command_time = latest_command.get()
-            if command is not None and now - command_time <= args.command_timeout:
-                target_transform = make_transform(
-                    rotation_from_rpy(command[3], command[4], command[5]),
-                    command[:3],
+                current_transform = body_transform(data, ee_body_id)
+
+                if mirror_mode:
+                    real_pose, real_pose_time = latest_real_state.get()
+                    real_state_fresh = (
+                        real_pose is not None
+                        and now - real_pose_time <= args.real_state_timeout
+                    )
+
+                    if real_state_fresh:
+                        target_transform = make_transform(
+                            rotation_from_rpy(
+                                real_pose[3],
+                                real_pose[4],
+                                real_pose[5],
+                            ),
+                            real_pose[:3],
+                        )
+                    else:
+                        target_transform = current_transform
+                        sync_cycles = 0
+
+                        if (
+                            not triangle_initialized
+                            and now - last_waiting_print >= 1.0
+                        ):
+                            print(
+                                "Waiting for fresh physical Panda state on "
+                                f"{args.real_state_bind_ip}:"
+                                f"{args.real_state_port}"
+                            )
+                            last_waiting_print = now
+                else:
+                    command, command_time = latest_command.get()
+                    command_is_fresh = (
+                        command is not None
+                        and now - command_time <= args.command_timeout
+                    )
+
+                    if command_is_fresh:
+                        target_transform = make_transform(
+                            rotation_from_rpy(
+                                command[3],
+                                command[4],
+                                command[5],
+                            ),
+                            command[:3],
+                        )
+                    else:
+                        target_transform = current_transform
+
+                T_BE = current_transform
+                position_error = target_transform[:3, 3] - T_BE[:3, 3]
+                orientation_error = so3_log(
+                    target_transform[:3, :3] @ T_BE[:3, :3].T
                 )
-            else:
-                # Hold current EE pose after timeout.
-                target_transform = body_transform(data, ee_body_id)
 
-            T_BE = body_transform(data, ee_body_id)
-            position_error = target_transform[:3, 3] - T_BE[:3, 3]
-            orientation_error = so3_log(
-                target_transform[:3, :3] @ T_BE[:3, :3].T
-            )
+                # Limit the Cartesian error used by IK so initialization cannot
+                # generate an excessive jump from a distant starting pose.
+                position_error_limited = position_error.copy()
+                position_norm = np.linalg.norm(position_error_limited)
+                if position_norm > 0.05:
+                    position_error_limited *= 0.05 / position_norm
 
-            # Limit task errors.
-            position_error_limited = position_error.copy()
-            position_norm = np.linalg.norm(position_error_limited)
-
-            if position_norm > 0.05:
-                position_error_limited *= 0.05 / position_norm
-
-            orientation_error_limited = orientation_error.copy()
-            orientation_norm = np.linalg.norm(
-                orientation_error_limited
-            )
-
-            if orientation_norm > math.radians(15.0):
-                orientation_error_limited *= (
-                    math.radians(15.0)
-                    / orientation_norm
+                orientation_error_limited = orientation_error.copy()
+                orientation_norm = np.linalg.norm(
+                    orientation_error_limited
                 )
+                if orientation_norm > math.radians(15.0):
+                    orientation_error_limited *= (
+                        math.radians(15.0) / orientation_norm
+                    )
 
-            twist = np.concatenate([
-                args.kp_position * position_error_limited,
-                args.kp_orientation * orientation_error_limited,
-            ])
+                twist = np.concatenate([
+                    args.kp_position * position_error_limited,
+                    args.kp_orientation * orientation_error_limited,
+                ])
 
-            mujoco.mj_jacBody(model, data, jacp, jacr, ee_body_id)
-            jacobian = np.vstack([jacp, jacr])
-            arm_columns = [joint.dof_address for joint in joints]
-            arm_jacobian = jacobian[:, arm_columns]
+                mujoco.mj_jacBody(
+                    model,
+                    data,
+                    jacp,
+                    jacr,
+                    ee_body_id,
+                )
+                jacobian = np.vstack([jacp, jacr])
+                arm_columns = [joint.dof_address for joint in joints]
+                arm_jacobian = jacobian[:, arm_columns]
 
-            # Adaptive damping.
-            singular_values = np.linalg.svd(
-                arm_jacobian,
-                compute_uv=False,
-            )
-            sigma_min = float(singular_values[-1])
+                singular_values = np.linalg.svd(
+                    arm_jacobian,
+                    compute_uv=False,
+                )
+                sigma_min = float(singular_values[-1])
 
-            sigma_threshold = 0.08
-            lambda_min = 0.02
-            lambda_max = 0.30
+                sigma_threshold = 0.08
+                lambda_min = max(0.001, min(args.damping, 0.30))
+                lambda_max = 0.30
 
-            
-            if sigma_min >= sigma_threshold:
-                damping = lambda_min
-            else:
-                ratio = 1.0 - sigma_min / sigma_threshold
-                damping = lambda_min + (
-                    lambda_max - lambda_min
-                ) * ratio * ratio
+                if sigma_min >= sigma_threshold:
+                    damping = lambda_min
+                else:
+                    ratio = np.clip(
+                        1.0 - sigma_min / sigma_threshold,
+                        0.0,
+                        1.0,
+                    )
+                    damping = lambda_min + (
+                        lambda_max - lambda_min
+                    ) * ratio * ratio
 
-            regularized = (
-                arm_jacobian @ arm_jacobian.T
-                + damping**2 * np.eye(6)
-            )
-
-            # Damped pseudoinverse: shape 7x6.
-            damped_inverse = (arm_jacobian.T@ np.linalg.solve(
+                regularized = (
+                    arm_jacobian @ arm_jacobian.T
+                    + damping**2 * np.eye(6)
+                )
+                damped_inverse = arm_jacobian.T @ np.linalg.solve(
                     regularized,
                     np.eye(6),
                 )
-            )
 
-            # Main Cartesian task velocity.
-            qdot_task = damped_inverse @ twist
-
-            q_current = np.array([
-                data.qpos[joint.qpos_address]
-                for joint in joints
-            ], dtype=float)
-            nullspace = (
-                np.eye(7)
-                - damped_inverse @ arm_jacobian
-            )
-
-
-            joint_limit_velocity = np.zeros(7)
-
-            limit_margin = math.radians(20.0)
-            limit_gain = 0.6
-
-            for index, joint in enumerate(joints):
-                q = q_current[index]
-
-                distance_to_min = q - joint.minimum
-                distance_to_max = joint.maximum - q
-
-                if distance_to_min < limit_margin:
-                    ratio = np.clip(
-                        (limit_margin - distance_to_min) / limit_margin,
-                        0.0,
-                        1.0,
-                    )
-                    joint_limit_velocity[index] += (
-                        limit_gain * ratio * ratio
-                    )
-
-                if distance_to_max < limit_margin:
-                    ratio = np.clip(
-                        (limit_margin - distance_to_max) / limit_margin,
-                        0.0,
-                        1.0,
-                    )
-                    joint_limit_velocity[index] -= (
-                        limit_gain * ratio * ratio
-                    )
-
-            # Combine task and joint-limit avoidance
-            qdot = (
-                qdot_task
-                + nullspace @ joint_limit_velocity
-            )
-            
-            #Solver safety checks
-            # if (
-            #     not np.all(np.isfinite(qdot))
-            #     or sigma_min < 0.015
-            # ):
-            #     print(
-            #         "IK HOLD: "
-            #         f"sigma_min={sigma_min:.4f}, "
-            #         f"finite={np.all(np.isfinite(qdot))}"
-            #     )
-            #     qdot = np.zeros(7)
-            # ------------------------------------------------------------
-            # Singularity recovery with hysteresis
-            # ------------------------------------------------------------
-
-            singularity_enter_threshold = 0.020
-            singularity_exit_threshold = 0.045
-
-            if sigma_min < singularity_enter_threshold:
-                singularity_recovery_active = True
-            elif (
-                singularity_recovery_active
-                and sigma_min > singularity_exit_threshold
-            ):
-                singularity_recovery_active = False
-
-            if not np.all(np.isfinite(qdot)):
-                qdot = np.zeros(7)
-                singularity_recovery_active = True
-
-            if singularity_recovery_active:
-                # Stop following the Cartesian target temporarily.
-                # Move toward joint-range centers only through the null space.
-                joint_centers = np.array([
-                    0.5 * (joint.minimum + joint.maximum)
-                    for joint in joints
-                ], dtype=float)
-
-                recovery_gain = 0.35
-
-                qdot_recovery = recovery_gain * (
-                    joint_centers - q_current
+                qdot_task = damped_inverse @ twist
+                q_current = np.array(
+                    [
+                        data.qpos[joint.qpos_address]
+                        for joint in joints
+                    ],
+                    dtype=float,
                 )
-                # # Encourage a bent elbow during recovery.
-                # # Index 3 corresponds to the fourth arm joint because Python is zero-based.
-                # qdot_recovery[3] -= 0.25 #TODO: adjust for panda model / do we really need this?
+                nullspace = (
+                    np.eye(7) - damped_inverse @ arm_jacobian
+                )
 
-                # Keep recovery motion from disturbing the EE more than necessary.
-                qdot = nullspace @ qdot_recovery
+                joint_limit_velocity = np.zeros(7)
+                limit_margin = math.radians(20.0)
+                limit_gain = 0.6
 
-                # Conservative speed during recovery.#TODO: tune /check for panda model idk
-                recovery_speed_limit = 0.35
+                for index, joint in enumerate(joints):
+                    q = q_current[index]
+                    distance_to_min = q - joint.minimum
+                    distance_to_max = joint.maximum - q
+
+                    if distance_to_min < limit_margin:
+                        ratio = np.clip(
+                            (
+                                limit_margin - distance_to_min
+                            ) / limit_margin,
+                            0.0,
+                            1.0,
+                        )
+                        joint_limit_velocity[index] += (
+                            limit_gain * ratio * ratio
+                        )
+
+                    if distance_to_max < limit_margin:
+                        ratio = np.clip(
+                            (
+                                limit_margin - distance_to_max
+                            ) / limit_margin,
+                            0.0,
+                            1.0,
+                        )
+                        joint_limit_velocity[index] -= (
+                            limit_gain * ratio * ratio
+                        )
+
+                qdot = (
+                    qdot_task
+                    + nullspace @ joint_limit_velocity
+                )
+
+                singularity_enter_threshold = 0.020
+                singularity_exit_threshold = 0.045
+
+                if sigma_min < singularity_enter_threshold:
+                    singularity_recovery_active = True
+                elif (
+                    singularity_recovery_active
+                    and sigma_min > singularity_exit_threshold
+                ):
+                    singularity_recovery_active = False
+
+                if not np.all(np.isfinite(qdot)):
+                    qdot = np.zeros(7)
+                    singularity_recovery_active = True
+
+                if singularity_recovery_active:
+                    joint_centers = np.array(
+                        [
+                            0.5 * (joint.minimum + joint.maximum)
+                            for joint in joints
+                        ],
+                        dtype=float,
+                    )
+                    qdot_recovery = 0.35 * (
+                        joint_centers - q_current
+                    )
+                    qdot = nullspace @ qdot_recovery
+                    qdot = np.clip(qdot, -0.35, 0.35)
+
+                    if now - last_ik_warning_time > 0.5:
+                        print(
+                            "IK RECOVERY: "
+                            f"sigma_min={sigma_min:.4f}, "
+                            "|raw_recovery|="
+                            f"{np.linalg.norm(qdot_recovery):.3f}, "
+                            "|projected_qdot|="
+                            f"{np.linalg.norm(qdot):.3f}"
+                        )
+                        last_ik_warning_time = now
 
                 qdot = np.clip(
                     qdot,
-                    -recovery_speed_limit,
-                    recovery_speed_limit,
+                    -args.max_joint_speed,
+                    args.max_joint_speed,
+                )
+                joint_step = np.clip(
+                    qdot * dt,
+                    -math.radians(0.5),
+                    math.radians(0.5),
                 )
 
-                if now - last_ik_warning_time > 0.5:
-                    print(
-                        "IK RECOVERY: "
-                        f"sigma_min={sigma_min:.4f}, "
-                        f"|raw_recovery|={np.linalg.norm(qdot_recovery):.3f}, "
-                        f"|projected_qdot|={np.linalg.norm(qdot):.3f}"
+                joint_margin = math.radians(3.0)
+                for joint, increment in zip(joints, joint_step):
+                    data.qpos[joint.qpos_address] += float(increment)
+                    data.qpos[joint.qpos_address] = np.clip(
+                        data.qpos[joint.qpos_address],
+                        joint.minimum + joint_margin,
+                        joint.maximum - joint_margin,
                     )
-                    last_ik_warning_time = now
 
-                        
-            # Joint-velocity limit.
-            qdot = np.clip(
-                qdot,
-                -args.max_joint_speed,
-                args.max_joint_speed,
-            )
+                mujoco.mj_forward(model, data)
+                T_BE = body_transform(data, ee_body_id)
 
-            # Per-cycle joint-step limit.
-            joint_step = np.clip(
-                qdot * dt,
-                -math.radians(0.5),
-                math.radians(0.5),
-            )
+                # Initialize the triangle exactly once, only after the
+                # simulated Panda has followed a fresh physical EE pose closely
+                # for several consecutive cycles.
+                if (
+                    mirror_mode
+                    and not triangle_initialized
+                    and real_state_fresh
+                ):
+                    sync_position_error = float(
+                        np.linalg.norm(
+                            target_transform[:3, 3]
+                            - T_BE[:3, 3]
+                        )
+                    )
+                    sync_orientation_error = float(
+                        np.linalg.norm(
+                            so3_log(
+                                target_transform[:3, :3]
+                                @ T_BE[:3, :3].T
+                            )
+                        )
+                    )
 
+                    if (
+                        sync_position_error
+                        <= args.sync_position_tolerance
+                        and sync_orientation_error
+                        <= sync_orientation_tolerance
+                    ):
+                        sync_cycles += 1
+                    else:
+                        sync_cycles = 0
 
-            joint_margin = math.radians(3.0)
+                    if sync_cycles >= args.sync_consecutive_cycles:
+                        T_BE_initial = T_BE.copy()
+                        T_BC_initial = T_BE_initial @ T_EC
+                        T_BT_initial = (
+                            T_BC_initial
+                            @ np.linalg.inv(T_TC_des)
+                        )
 
-            for joint, increment in zip(joints, joint_step):
-                data.qpos[joint.qpos_address] += float(increment)
+                        triangle_initial_pos[:] = T_BT_initial[:3, 3]
+                        triangle_initial_rpy[:] = rpy_from_rotation(
+                            T_BT_initial[:3, :3]
+                        )
+                        triangle_pos[:] = triangle_initial_pos
+                        triangle_rpy[:] = triangle_initial_rpy
 
-                data.qpos[joint.qpos_address] = np.clip(
-                    data.qpos[joint.qpos_address],
-                    joint.minimum + joint_margin,
-                    joint.maximum - joint_margin,
-                )
-            mujoco.mj_forward(model, data)
-            T_BE = body_transform(data, ee_body_id)
+                        data.mocap_pos[0] = triangle_pos
+                        data.mocap_quat[0] = (
+                            quat_wxyz_from_rotation(
+                                T_BT_initial[:3, :3]
+                            )
+                        )
+                        mujoco.mj_forward(model, data)
 
-            # Simulated state packet.
-            if now - last_state_send >= 0.002:
-                rpy = rpy_from_rotation(T_BE[:3, :3])
-                state = np.concatenate([T_BE[:3, 3], rpy])
-                state_socket.sendto(
-                    struct.pack(POSE_FORMAT, *state.astype(np.float32)),
-                    (args.state_ip, args.state_port),
-                )
-                last_state_send = now
+                        triangle_initialized = True
+                        print(
+                            "Digital twin synchronized: "
+                            f"|e_p|={sync_position_error:.4f} m, "
+                            "|e_R|="
+                            f"{math.degrees(sync_orientation_error):.2f} deg."
+                        )
+                        print(
+                            "Triangle initialized relative to the "
+                            "physical Panda pose; T_TC streaming enabled."
+                        )
 
-            # Synthetic event tracker measurement.
-            if now - last_tracker_send >= 0.01:
-                T_BC = T_BE @ T_EC
-                T_BT = body_transform(data, triangle_body_id)
-                T_TC = np.linalg.inv(T_BT) @ T_BC
-                tracker_socket.sendto(
-                    struct.pack(TRACKER_FORMAT, *T_TC.reshape(-1)),
-                    (args.tracker_ip, args.tracker_port),
-                )
-                last_tracker_send = now
+                if publish_sim_state and now - last_state_send >= 0.002:
+                    rpy = rpy_from_rotation(T_BE[:3, :3])
+                    state = np.concatenate([T_BE[:3, 3], rpy])
+                    state_socket.sendto(
+                        struct.pack(
+                            POSE_FORMAT,
+                            *state.astype(np.float32),
+                        ),
+                        (args.state_ip, args.state_port),
+                    )
+                    last_state_send = now
 
-            if now - last_status >= 1.0:
-                smallest_singular_value = np.linalg.svd(
-                    arm_jacobian, compute_uv=False
-                )[-1]
-                camera_body_id = mujoco.mj_name2id(
-                    model, mujoco.mjtObj.mjOBJ_BODY, "pbvs_camera"
-                )
-                tip_body_id = mujoco.mj_name2id(
-                    model, mujoco.mjtObj.mjOBJ_BODY, "pbvs_stick_tip"
-                )
-                T_BC_visual = body_transform(data, camera_body_id)
-                T_BS_visual = body_transform(data, tip_body_id)
-                print(
-                    f"current_EE_xyz={np.round(T_BE[:3, 3], 3)}, "
-                    f"camera_xyz={np.round(T_BC_visual[:3, 3], 3)}, "
-                    f"tip_xyz={np.round(T_BS_visual[:3, 3], 3)}\n"
-                    f"inner_EE_error: |e_p|={np.linalg.norm(position_error):.4f} m, "
-                    f"|e_R|={math.degrees(np.linalg.norm(orientation_error)):.2f} deg, "
-                    f"sigma_min={smallest_singular_value:.4f}"
-                )
-                last_status = now
+                # Do not publish a tracker pose before the triangle has been
+                # initialized relative to the synchronized physical robot.
+                if (
+                    triangle_initialized
+                    and now - last_tracker_send >= 0.01
+                ):
+                    T_BC = T_BE @ T_EC
+                    T_BT = body_transform(data, triangle_body_id)
+                    T_TC = np.linalg.inv(T_BT) @ T_BC
 
-            viewer.sync()
-            time.sleep(max(model.opt.timestep, 0.001))
+                    tracker_socket.sendto(
+                        struct.pack(
+                            TRACKER_FORMAT,
+                            *T_TC.reshape(-1),
+                        ),
+                        (args.tracker_ip, args.tracker_port),
+                    )
+                    last_tracker_send = now
 
-    state_socket.close()
-    tracker_socket.close()
+                if now - last_status >= 1.0:
+                    T_BC_visual = body_transform(
+                        data,
+                        camera_body_id,
+                    )
+                    T_BS_visual = body_transform(
+                        data,
+                        tip_body_id,
+                    )
+
+                    mode_status = "simulation"
+                    if mirror_mode:
+                        if triangle_initialized:
+                            mode_status = "mirror-synchronized"
+                        elif real_state_fresh:
+                            mode_status = (
+                                "mirror-synchronizing "
+                                f"({sync_cycles}/"
+                                f"{args.sync_consecutive_cycles})"
+                            )
+                        else:
+                            mode_status = "mirror-waiting-for-state"
+
+                    status = (
+                        f"mode={mode_status}, "
+                        f"current_EE_xyz="
+                        f"{np.round(T_BE[:3, 3], 3)}, "
+                        f"camera_xyz="
+                        f"{np.round(T_BC_visual[:3, 3], 3)}, "
+                        f"tip_xyz="
+                        f"{np.round(T_BS_visual[:3, 3], 3)}\n"
+                        "inner_EE_error: "
+                        f"|e_p|={np.linalg.norm(position_error):.4f} m, "
+                        "|e_R|="
+                        f"{math.degrees(np.linalg.norm(orientation_error)):.2f} deg, "
+                        f"sigma_min={sigma_min:.4f}"
+                    )
+
+                    if mirror_mode and not triangle_initialized:
+                        status += (
+                            "\nsync_error: "
+                            f"|e_p|={sync_position_error:.4f} m, "
+                            "|e_R|="
+                            f"{math.degrees(sync_orientation_error):.2f} deg"
+                        )
+
+                    print(status)
+                    last_status = now
+
+                viewer.sync()
+                time.sleep(max(model.opt.timestep, 0.001))
+    finally:
+        state_socket.close()
+        tracker_socket.close()
+
     return 0
 
 
