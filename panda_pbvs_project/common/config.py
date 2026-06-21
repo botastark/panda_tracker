@@ -6,7 +6,7 @@ from typing import Any
 import json
 import math
 import numpy as np
-
+from common.safety import finite_transform
 
 def _matrix(raw: dict[str, Any], name: str) -> np.ndarray:
     value = np.asarray(raw[name], dtype=float)
@@ -16,6 +16,25 @@ def _matrix(raw: dict[str, Any], name: str) -> np.ndarray:
         raise ValueError(f"{name} contains invalid values.")
     return value
 
+def invert_transform(T: np.ndarray) -> np.ndarray:
+    """Invert a 4x4 rigid-body homogeneous transformation matrix."""
+    T = np.asarray(T, dtype=float)
+
+    if T.shape != (4, 4):
+        raise ValueError("Transform must be 4x4.")
+    if not np.all(np.isfinite(T)):
+        raise ValueError("Transform contains invalid values.")
+    if not np.allclose(T[3], [0.0, 0.0, 0.0, 1.0]):
+        raise ValueError("Transform has an invalid homogeneous bottom row.")
+
+    R = T[:3, :3]
+    t = T[:3, 3]
+
+    T_inv = np.eye(4, dtype=float)
+    T_inv[:3, :3] = R.T
+    T_inv[:3, 3] = -(R.T @ t)
+
+    return T_inv
 
 @dataclass(frozen=True)
 class PBVSConfig:
@@ -37,16 +56,21 @@ class PBVSConfig:
     T_EC: np.ndarray
     T_CS: np.ndarray
     T_TS_des: np.ndarray
-    T_TC_des: np.ndarray
     tool_visualization: dict[str, Any]
+
+    @property
+    def T_ES(self) -> np.ndarray:
+        """Pose of stick-tip frame S expressed in robot EE frame E."""
+        return self.T_EC @ self.T_CS
+
+    @property
+    def T_TC_des(self) -> np.ndarray:
+        """Desired camera pose C expressed in target frame T."""
+        return self.T_TS_des @ invert_transform(self.T_CS)
 
 
 def load_pbvs_config(path: Path) -> PBVSConfig:
     raw = json.loads(path.read_text())
-    T_EC = _matrix(raw, "T_EC")
-    T_CS = _matrix(raw, "T_CS")
-    T_TS_des = _matrix(raw, "T_TS_des")
-
     workspace = raw.get("workspace", {})
     workspace_min = np.asarray(
         workspace.get("min", [-1.0, -1.0, -1.0]),
@@ -57,27 +81,46 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         dtype=float,
     )
 
-    return PBVSConfig(
+    config = PBVSConfig(
         control_rate_hz=float(raw["control_rate_hz"]),
         control_orientation=bool(raw.get("control_orientation", True)),
         kp_position=float(raw["kp_position"]),
         kp_orientation=float(raw["kp_orientation"]),
         max_linear_speed=float(raw["max_linear_speed"]),
-        max_angular_speed=math.radians(float(raw["max_angular_speed_deg"])),
+        max_angular_speed=math.radians(
+            float(raw["max_angular_speed_deg"])
+        ),
         panda_state_timeout=float(raw["panda_state_timeout"]),
         tracker_timeout=float(raw["tracker_timeout"]),
-        max_tracker_position_jump=float(raw["max_tracker_position_jump"]),
-        max_tracker_angle_jump=math.radians(float(raw["max_tracker_angle_jump_deg"])),
-        max_enable_position_error=float(raw["max_enable_position_error"]),
+        max_tracker_position_jump=float(
+            raw["max_tracker_position_jump"]
+        ),
+        max_tracker_angle_jump=math.radians(
+            float(raw["max_tracker_angle_jump_deg"])
+        ),
+        max_enable_position_error=float(
+            raw["max_enable_position_error"]
+        ),
         max_enable_orientation_error=math.radians(
             float(raw["max_enable_orientation_error_deg"])
         ),
-        consecutive_valid_required=int(raw["consecutive_valid_required"]),
+        consecutive_valid_required=int(
+            raw["consecutive_valid_required"]
+        ),
         workspace_min=workspace_min,
         workspace_max=workspace_max,
-        T_EC=T_EC,
-        T_CS=T_CS,
-        T_TS_des=T_TS_des,
-        T_TC_des=T_TS_des @ np.linalg.inv(T_CS),
-        tool_visualization=dict(raw.get("tool_visualization", {})),
+        T_EC=_matrix(raw, "T_EC"),
+        T_CS=_matrix(raw, "T_CS"),
+        T_TS_des=_matrix(raw, "T_TS_des"),
+        tool_visualization=dict(
+            raw.get("tool_visualization", {})
+        ),
     )
+
+    if not finite_transform(config.T_ES):
+        raise ValueError(
+            "Derived T_ES = T_EC @ T_CS is not a valid "
+            "homogeneous transform."
+        )
+
+    return config

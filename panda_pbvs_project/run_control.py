@@ -30,6 +30,35 @@ def main() -> int:
     args = parse_args()
     raw = json.loads(args.config.read_text())
     config = load_pbvs_config(args.config)
+    print("T_ES = T_EC @ T_CS:")
+    print(
+        np.array2string(
+            config.T_ES,
+            precision=6,
+            suppress_small=True,
+        )
+    )
+    print(
+        "stick_tip_xyz_in_E =",
+        np.array2string(
+            config.T_ES[:3, 3],
+            precision=6,
+        ),
+    )
+    expected_T_ES = config.T_EC @ config.T_CS
+
+    assert np.allclose(
+        config.T_ES,
+        expected_T_ES,
+        atol=1e-12,
+    )
+    identity = config.T_ES @ invert_transform(config.T_ES)
+
+    assert np.allclose(
+        identity,
+        np.eye(4),
+        atol=1e-9,
+    )
 
     if args.backend == "sim":
         backend = MujocoUdpBackend(
@@ -48,6 +77,7 @@ def main() -> int:
 
     tracker = TrackerUdpSource(args.tracker_bind_ip, args.tracker_port)
     controller = PBVSController(config)
+
 
     period = 1.0 / config.control_rate_hz
     previous = time.monotonic()
