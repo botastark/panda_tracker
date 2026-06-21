@@ -1,0 +1,158 @@
+# External UDP Triangle Pose: Panda + MuJoCo + PBVS
+
+## Coordinate and packet convention
+
+The external source streams the triangle transform T_BT: triangle frame T
+expressed in Panda base frame B.
+
+UDP packet: little-endian <6f>, exactly 24 bytes:
+
+    x_B, y_B, z_B, roll_B, pitch_B, yaw_B
+
+Position is in metres. Angles are in radians on the wire and use:
+
+    R_BT = Rz(yaw) * Ry(pitch) * Rx(roll)
+
+The provided sender accepts angles in degrees and converts them to radians.
+
+## Port layout
+
+Physical explorer_tracker
+    -> 0.0.0.0:6200  udp_pose_fanout.py
+         -> 127.0.0.1:6201  run_control Panda state
+         -> 127.0.0.1:6202  MuJoCo mirror state
+         -> 127.0.0.1:6203  triangle_pose_to_tracker Panda state
+
+External triangle_pose_sender.py
+         -> 127.0.0.1:6601  MuJoCo triangle pose
+         -> 127.0.0.1:6602  triangle_pose_to_tracker triangle pose
+
+triangle_pose_to_tracker.py
+         -> 127.0.0.1:6501  run_control tracker T_TC
+
+The bridge computes:
+
+    T_BC = T_BE @ T_EC
+    T_TC = inv(T_BT) @ T_BC
+
+MuJoCo is visualization-only and is not required for physical control.
+
+## 1. Panda-state fan-out
+
+python3 udp_pose_fanout.py \
+  --bind-ip 0.0.0.0 \
+  --bind-port 6200 \
+  --destination 127.0.0.1:6201 \
+  --destination 127.0.0.1:6202 \
+  --destination 127.0.0.1:6203
+
+## 2. Physical explorer
+
+cd /opt/libfranka/fe_panda
+../build/fe_panda/explorer_tracker 1 0
+
+## 3. MuJoCo visualization
+
+python3 simulation/simulated_explorer_holder_camera_udp_triangle.py \
+  --panda-xml mujoco_menagerie/franka_emika_panda/panda.xml \
+  --pbvs-config panda_pbvs_project/configs/pbvs_robot.json \
+  --ee-body hand \
+  --real-state-bind-ip 127.0.0.1 \
+  --real-state-port 6202 \
+  --triangle-bind-ip 127.0.0.1 \
+  --triangle-port 6601 \
+  --triangle-timeout 0.5 \
+  --disable-tracker-output \
+  --max-joint-speed 2.0 \
+  --kp-position 10.0 \
+  --kp-orientation 8.0
+
+The triangle remains hidden until fresh packets arrive. It is hidden again if
+the stream is stale for more than --triangle-timeout.
+
+## 4. Physical-pose + triangle-pose tracker bridge
+
+python3 triangle_pose_to_tracker.py \
+  --pbvs-config panda_pbvs_project/configs/pbvs_robot.json \
+  --robot-bind-ip 127.0.0.1 \
+  --robot-port 6203 \
+  --triangle-bind-ip 127.0.0.1 \
+  --triangle-port 6602 \
+  --tracker-ip 127.0.0.1 \
+  --tracker-port 6501 \
+  --rate 100
+
+The bridge sends no tracker packets unless both input streams are fresh.
+
+## 5. PBVS controller
+
+python3 panda_pbvs_project/run_control.py \
+  --backend panda \
+  --config panda_pbvs_project/configs/pbvs_robot.json \
+  --tracker-bind-ip 127.0.0.1 \
+  --tracker-port 6501
+
+The controller keeps receiving Panda state on port 6201 as before.
+
+## 6. Test triangle broadcaster
+
+Choose a safe T_BT pose in the Panda base frame:
+
+python3 triangle_pose_sender.py \
+  --x 0.45 \
+  --y 0.00 \
+  --z 0.35 \
+  --roll-deg 0 \
+  --pitch-deg 0 \
+  --yaw-deg 0 \
+  --rate 30 \
+  --destination 127.0.0.1:6601 \
+  --destination 127.0.0.1:6602
+
+Interactive commands while it streams:
+
+    set X Y Z R P Y
+    move DX DY DZ
+    rotate DR DP DY
+    show
+    quit
+
+Angles in interactive commands are degrees.
+
+## Future sender on another computer
+
+On the Panda computer, bind both consumers to all interfaces:
+
+    simulator: --triangle-bind-ip 0.0.0.0 --triangle-port 6601
+    bridge:    --triangle-bind-ip 0.0.0.0 --triangle-port 6602
+
+On the remote computer, replace PANDA_PC_IP below:
+
+python3 triangle_pose_sender.py \
+  --x 0.45 --y 0.00 --z 0.35 \
+  --destination PANDA_PC_IP:6601 \
+  --destination PANDA_PC_IP:6602
+
+Allow UDP ports 6601 and 6602 through the Panda computer firewall only for the
+trusted sender/network.
+
+## Port check
+
+sudo ss -lunp | grep -E ':(2600|6200|6201|6202|6203|6501|6601|6602)\b'
+
+Expected listeners:
+
+    6200  udp_pose_fanout.py
+    6201  run_control.py
+    6202  MuJoCo simulator
+    6203  triangle_pose_to_tracker.py
+    6501  run_control.py
+    6601  MuJoCo simulator
+    6602  triangle_pose_to_tracker.py
+
+## Safety behavior
+
+- Simulator: hides the triangle when its stream is stale.
+- Tracker bridge: stops publishing T_TC if robot or triangle input is stale.
+- The PBVS controller must transition to HOLD when tracker packets become stale.
+  Confirm this behavior before commanding physical motion.
