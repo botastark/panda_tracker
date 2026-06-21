@@ -53,19 +53,19 @@ class PBVSConfig:
     consecutive_valid_required: int
     workspace_min: np.ndarray
     workspace_max: np.ndarray
-    T_EC: np.ndarray
-    T_CS: np.ndarray
+    # Tool and task transforms. 
+    T_EC: np.ndarray 
+    T_ES: np.ndarray 
     T_TS_des: np.ndarray
     tool_visualization: dict[str, Any]
-
-    @property
-    def T_ES(self) -> np.ndarray:
-        """Pose of stick-tip frame S expressed in robot EE frame E."""
-        return self.T_EC @ self.T_CS
-
-    @property
-    def T_TC_des(self) -> np.ndarray:
-        """Desired camera pose C expressed in target frame T."""
+    
+    @property 
+    def T_CS(self) -> np.ndarray: 
+        """Pose of stick-tip frame S expressed in camera frame C.""" 
+        return invert_transform(self.T_EC) @ self.T_ES 
+    @property 
+    def T_TC_des(self) -> np.ndarray: 
+        """Legacy desired camera pose C expressed in triangle frame T.""" 
         return self.T_TS_des @ invert_transform(self.T_CS)
 
 
@@ -80,10 +80,26 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         workspace.get("max", [1.0, 1.0, 1.0]),
         dtype=float,
     )
+    T_EC = _matrix(raw, "T_EC")
+    T_ES = _matrix(raw, "T_ES")
+    T_TS_des = _matrix(raw, "T_TS_des")
+
+    if not finite_transform(T_EC):
+        raise ValueError("T_EC is not a valid homogeneous transform.")
+
+    if not finite_transform(T_ES):
+        raise ValueError("T_ES is not a valid homogeneous transform.")
+
+    if not finite_transform(T_TS_des):
+        raise ValueError(
+            "T_TS_des is not a valid homogeneous transform."
+        )
 
     config = PBVSConfig(
         control_rate_hz=float(raw["control_rate_hz"]),
-        control_orientation=bool(raw.get("control_orientation", True)),
+        control_orientation=bool(
+            raw.get("control_orientation", True)
+        ),
         kp_position=float(raw["kp_position"]),
         kp_orientation=float(raw["kp_orientation"]),
         max_linear_speed=float(raw["max_linear_speed"]),
@@ -109,18 +125,13 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         ),
         workspace_min=workspace_min,
         workspace_max=workspace_max,
-        T_EC=_matrix(raw, "T_EC"),
-        T_CS=_matrix(raw, "T_CS"),
-        T_TS_des=_matrix(raw, "T_TS_des"),
+        T_EC=T_EC,
+        T_ES=T_ES,
+        T_TS_des=T_TS_des,
         tool_visualization=dict(
             raw.get("tool_visualization", {})
         ),
     )
 
-    if not finite_transform(config.T_ES):
-        raise ValueError(
-            "Derived T_ES = T_EC @ T_CS is not a valid "
-            "homogeneous transform."
-        )
-
     return config
+

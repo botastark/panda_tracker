@@ -1,4 +1,6 @@
 source /home/bota/repos/panda_pbvs_sim/.venv/bin/activate
+bota@panda:~/Desktop$ source /home/bota/panda_tracker/.venv/bin/activate
+
 conda deactivate
 cd /home/bota/repos/panda_pbvs_sim
 
@@ -159,7 +161,6 @@ followed by:
 ```text
 mode=mirror-synchronizing
 ```
-
 and finally a synchronization message indicating that tracker streaming is enabled.
 
 ### 5. Start the PBVS controller

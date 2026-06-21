@@ -19,7 +19,7 @@ from common.safety import clamp_workspace, finite_transform
 
 class ControllerState(Enum):
     WAIT_FOR_ROBOT = auto()
-    WAIT_FOR_TRACKER = auto()
+    WAIT_FOR_TASK_POSE = auto()
     READY = auto()
     TRACKING = auto()
     HOLD = auto()
@@ -27,11 +27,10 @@ class ControllerState(Enum):
 
 
 @dataclass
-class TrackerMeasurement:
-    T_TC: np.ndarray
+class TaskPoseMeasurement:
+    T_TS: np.ndarray
     timestamp: float
     valid: bool = True
-
 
 @dataclass
 class PBVSDiagnostics:
@@ -45,7 +44,7 @@ class PBVSController:
     def __init__(self, config: PBVSConfig) -> None:
         self.config = config
         self.state = ControllerState.WAIT_FOR_ROBOT
-        self.last_tracker: TrackerMeasurement | None = None
+        self.last_task_pose: TaskPoseMeasurement | None = None
         self.valid_count = 0
 
         # Persistent equilibrium pose sent to explorer.
@@ -55,21 +54,27 @@ class PBVSController:
         # Units: metres.
         self.max_command_lead = 0.005
 
-    def _tracker_valid(
+    def _task_pose_valid(
         self,
-        measurement: TrackerMeasurement,
+        measurement: TaskPoseMeasurement,
         now: float,
     ) -> bool:
-        if not measurement.valid or not finite_transform(measurement.T_TC):
+        if (
+            not measurement.valid
+            or not finite_transform(measurement.T_TS)
+        ):
             return False
 
-        if now - measurement.timestamp > self.config.tracker_timeout:
+        if (
+            now - measurement.timestamp
+            > self.config.tracker_timeout
+        ):
             return False
 
-        if self.last_tracker is not None:
+        if self.last_task_pose is not None:
             delta = (
-                invert_transform(self.last_tracker.T_TC)
-                @ measurement.T_TC
+                invert_transform(self.last_task_pose.T_TS)
+                @ measurement.T_TS
             )
 
             if (
@@ -80,7 +85,9 @@ class PBVSController:
 
             if (
                 self.config.control_orientation
-                and np.linalg.norm(so3_log(delta[:3, :3]))
+                and np.linalg.norm(
+                    so3_log(delta[:3, :3])
+                )
                 > self.config.max_tracker_angle_jump
             ):
                 return False
@@ -90,25 +97,28 @@ class PBVSController:
     def _goal_pose(
         self,
         T_BE: np.ndarray,
-        T_TC: np.ndarray,
+        T_TS: np.ndarray,
     ) -> np.ndarray:
-        T_CE = invert_transform(self.config.T_EC)
-        delta_T_C = (
-            invert_transform(T_TC)
-            @ self.config.T_TC_des
+        T_SE = invert_transform(self.config.T_ES)
+
+        delta_T_S = (
+            invert_transform(T_TS)
+            @ self.config.T_TS_des
         )
+
         delta_T_E = (
-            self.config.T_EC
-            @ delta_T_C
-            @ T_CE
+            self.config.T_ES
+            @ delta_T_S
+            @ T_SE
         )
+
         return T_BE @ delta_T_E
 
     def step(
         self,
         T_BE: np.ndarray | None,
         robot_state_age: float,
-        tracker: TrackerMeasurement | None,
+        task_pose: TaskPoseMeasurement | None,
         dt: float,
     ) -> tuple[np.ndarray | None, PBVSDiagnostics]:
         if (
@@ -124,34 +134,39 @@ class PBVSController:
                 reason="robot_state_missing_or_stale",
             )
 
-        if tracker is None:
+        if task_pose is None:
             self.command_pose = None
-            self.state = ControllerState.WAIT_FOR_TRACKER
+            self.state = ControllerState.WAIT_FOR_TASK_POSE
             self.valid_count = 0
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
-                reason="tracker_missing",
+                reason="task_pose_missing",
             )
 
         now = time.monotonic()
 
-        if not self._tracker_valid(tracker, now):
+        if not self._task_pose_valid(task_pose, now):
             self.command_pose = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
 
-            if tracker.valid and finite_transform(tracker.T_TC):
-                self.last_tracker = tracker
+            if (
+                task_pose.valid
+                and finite_transform(task_pose.T_TS)
+            ):
+                # Do not update last_task_pose here.
+                # A rejected jump must not become the new baseline.
+                pass
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
-                reason="tracker_invalid_stale_or_jump",
+                reason="task_pose_invalid_stale_or_jump",
             )
 
         T_goal = self._goal_pose(
             T_BE,
-            tracker.T_TC,
+            task_pose.T_TS,
         )
 
         p_error = (
@@ -197,7 +212,7 @@ class PBVSController:
                 reason="error_exceeds_enable_threshold",
             )
 
-        self.last_tracker = tracker
+        self.last_task_pose = task_pose
         self.valid_count += 1
 
         if (

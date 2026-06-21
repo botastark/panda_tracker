@@ -6,13 +6,12 @@ import time
 import numpy as np
 
 from common.protocol import MATRIX_SIZE, unpack_matrix4
-from control.pbvs_controller import TrackerMeasurement
+from control.pbvs_controller import TaskPoseMeasurement
 
-
-class TrackerUdpSource:
+class TaskPoseUdpSource:
     def __init__(self, bind_ip: str, port: int) -> None:
         self._lock = threading.Lock()
-        self._latest: TrackerMeasurement | None = None
+        self._latest: TaskPoseMeasurement | None = None
         self._running = True
         self._thread = threading.Thread(
             target=self._receive_loop,
@@ -39,8 +38,8 @@ class TrackerUdpSource:
 
                 matrix = unpack_matrix4(data)
                 valid = np.all(np.isfinite(matrix))
-                measurement = TrackerMeasurement(
-                    T_TC=matrix,
+                measurement = TaskPoseMeasurement(
+                    T_TS=matrix,
                     timestamp=time.monotonic(),
                     valid=valid,
                 )
@@ -49,7 +48,7 @@ class TrackerUdpSource:
         finally:
             sock.close()
 
-    def get_latest(self) -> TrackerMeasurement | None:
+    def get_latest(self) -> TaskPoseMeasurement | None:
         with self._lock:
             return self._latest
 

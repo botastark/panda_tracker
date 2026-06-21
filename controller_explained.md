@@ -389,7 +389,6 @@ The translation may include:
 - stand-off distance
 - desired contact compression
 
-The rotation must define the desired direction of the stick relative to the triangle normal.
 
 ### Controller State Behaviour
 
