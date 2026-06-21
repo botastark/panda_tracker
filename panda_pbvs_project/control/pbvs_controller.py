@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
-import math
 import time
+
 import numpy as np
 
 from common.config import PBVSConfig
-from common.geometry import clamp_norm, invert_transform, make_transform, so3_exp, so3_log
+from common.geometry import (
+    clamp_norm,
+    invert_transform,
+    make_transform,
+    so3_exp,
+    so3_log,
+)
 from common.safety import clamp_workspace, finite_transform
 
 
@@ -42,6 +48,13 @@ class PBVSController:
         self.last_tracker: TrackerMeasurement | None = None
         self.valid_count = 0
 
+        # Persistent equilibrium pose sent to explorer.
+        self.command_pose: np.ndarray | None = None
+
+        # Maximum distance between measured EE and commanded equilibrium.
+        # Units: metres.
+        self.max_command_lead = 0.005
+
     def _tracker_valid(
         self,
         measurement: TrackerMeasurement,
@@ -49,14 +62,27 @@ class PBVSController:
     ) -> bool:
         if not measurement.valid or not finite_transform(measurement.T_TC):
             return False
+
         if now - measurement.timestamp > self.config.tracker_timeout:
             return False
 
         if self.last_tracker is not None:
-            delta = invert_transform(self.last_tracker.T_TC) @ measurement.T_TC
-            if np.linalg.norm(delta[:3, 3]) > self.config.max_tracker_position_jump:
+            delta = (
+                invert_transform(self.last_tracker.T_TC)
+                @ measurement.T_TC
+            )
+
+            if (
+                np.linalg.norm(delta[:3, 3])
+                > self.config.max_tracker_position_jump
+            ):
                 return False
-            if np.linalg.norm(so3_log(delta[:3, :3])) > self.config.max_tracker_angle_jump:
+
+            if (
+                self.config.control_orientation
+                and np.linalg.norm(so3_log(delta[:3, :3]))
+                > self.config.max_tracker_angle_jump
+            ):
                 return False
 
         return True
@@ -67,8 +93,15 @@ class PBVSController:
         T_TC: np.ndarray,
     ) -> np.ndarray:
         T_CE = invert_transform(self.config.T_EC)
-        delta_T_C = invert_transform(T_TC) @ self.config.T_TC_des
-        delta_T_E = self.config.T_EC @ delta_T_C @ T_CE
+        delta_T_C = (
+            invert_transform(T_TC)
+            @ self.config.T_TC_des
+        )
+        delta_T_E = (
+            self.config.T_EC
+            @ delta_T_C
+            @ T_CE
+        )
         return T_BE @ delta_T_E
 
     def step(
@@ -78,36 +111,85 @@ class PBVSController:
         tracker: TrackerMeasurement | None,
         dt: float,
     ) -> tuple[np.ndarray | None, PBVSDiagnostics]:
-        if T_BE is None or robot_state_age > self.config.panda_state_timeout:
+        if (
+            T_BE is None
+            or robot_state_age > self.config.panda_state_timeout
+        ):
+            self.command_pose = None
             self.state = ControllerState.WAIT_FOR_ROBOT
-            return None, PBVSDiagnostics(self.state, reason="robot_state_missing_or_stale")
+            self.valid_count = 0
+
+            return None, PBVSDiagnostics(
+                self.state,
+                reason="robot_state_missing_or_stale",
+            )
 
         if tracker is None:
+            self.command_pose = None
             self.state = ControllerState.WAIT_FOR_TRACKER
             self.valid_count = 0
-            return T_BE.copy(), PBVSDiagnostics(self.state, reason="tracker_missing")
+
+            return T_BE.copy(), PBVSDiagnostics(
+                self.state,
+                reason="tracker_missing",
+            )
 
         now = time.monotonic()
+
         if not self._tracker_valid(tracker, now):
+            self.command_pose = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
+
             if tracker.valid and finite_transform(tracker.T_TC):
                 self.last_tracker = tracker
-            return T_BE.copy(), PBVSDiagnostics(self.state, reason="tracker_invalid_stale_or_jump")
 
-        T_goal = self._goal_pose(T_BE, tracker.T_TC)
-        p_error = T_goal[:3, 3] - T_BE[:3, 3]
-        r_error = so3_log(T_BE[:3, :3].T @ T_goal[:3, :3])
+            return T_BE.copy(), PBVSDiagnostics(
+                self.state,
+                reason="tracker_invalid_stale_or_jump",
+            )
+
+        T_goal = self._goal_pose(
+            T_BE,
+            tracker.T_TC,
+        )
+
+        p_error = (
+            T_goal[:3, 3]
+            - T_BE[:3, 3]
+        )
+
+        if self.config.control_orientation:
+            r_error = so3_log(
+                T_BE[:3, :3].T
+                @ T_goal[:3, :3]
+            )
+        else:
+            T_goal[:3, :3] = T_BE[:3, :3]
+            r_error = np.zeros(3)
 
         p_norm = float(np.linalg.norm(p_error))
         r_norm = float(np.linalg.norm(r_error))
 
+        position_error_too_large = (
+            p_norm
+            > self.config.max_enable_position_error
+        )
+
+        orientation_error_too_large = (
+            self.config.control_orientation
+            and r_norm
+            > self.config.max_enable_orientation_error
+        )
+
         if (
-            p_norm > self.config.max_enable_position_error
-            or r_norm > self.config.max_enable_orientation_error
+            position_error_too_large
+            or orientation_error_too_large
         ):
+            self.command_pose = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
+
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
                 position_error=p_norm,
@@ -118,8 +200,13 @@ class PBVSController:
         self.last_tracker = tracker
         self.valid_count += 1
 
-        if self.valid_count < self.config.consecutive_valid_required:
+        if (
+            self.valid_count
+            < self.config.consecutive_valid_required
+        ):
+            self.command_pose = None
             self.state = ControllerState.READY
+
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
                 position_error=p_norm,
@@ -131,22 +218,94 @@ class PBVSController:
             self.config.kp_position * p_error,
             self.config.max_linear_speed,
         )
-        angular_velocity = clamp_norm(
-            self.config.kp_orientation * r_error,
-            self.config.max_angular_speed,
+
+        if self.config.control_orientation:
+            angular_velocity = clamp_norm(
+                self.config.kp_orientation * r_error,
+                self.config.max_angular_speed,
+            )
+        else:
+            angular_velocity = np.zeros(3)
+
+        if self.command_pose is None:
+            self.command_pose = T_BE.copy()
+
+        command_position = (
+            self.command_pose[:3, 3]
+            + linear_velocity * dt
         )
 
-        command = make_transform(
-            T_BE[:3, :3] @ so3_exp(angular_velocity * dt),
-            T_BE[:3, 3] + linear_velocity * dt,
+        command_lead = (
+            command_position
+            - T_BE[:3, 3]
         )
+        lead_norm = float(np.linalg.norm(command_lead))
+
+        if lead_norm > self.max_command_lead:
+            command_lead *= (
+                self.max_command_lead
+                / lead_norm
+            )
+
+        command_position = (
+            T_BE[:3, 3]
+            + command_lead
+        )
+
+        if self.config.control_orientation:
+            command_rotation = (
+                self.command_pose[:3, :3]
+                @ so3_exp(
+                    angular_velocity * dt
+                )
+            )
+        else:
+            command_rotation = T_BE[:3, :3].copy()
+
+        command = make_transform(
+            command_rotation,
+            command_position,
+        )
+
         command = clamp_workspace(
             command,
             self.config.workspace_min,
             self.config.workspace_max,
         )
 
+        command_lead_after_clamp = (
+            command[:3, 3]
+            - T_BE[:3, 3]
+        )
+
+        print(
+            "current_EE_xyz=",
+            np.array2string(
+                T_BE[:3, 3],
+                precision=6,
+            ),
+            "p_error=",
+            np.array2string(
+                p_error,
+                precision=6,
+            ),
+            "command_xyz=",
+            np.array2string(
+                command[:3, 3],
+                precision=6,
+            ),
+            "command_lead=",
+            np.array2string(
+                command_lead_after_clamp,
+                precision=6,
+            ),
+            "lead_norm_mm=",
+            f"{1000.0 * np.linalg.norm(command_lead_after_clamp):.3f}",
+        )
+
+        self.command_pose = command.copy()
         self.state = ControllerState.TRACKING
+
         return command, PBVSDiagnostics(
             self.state,
             position_error=p_norm,

@@ -553,6 +553,22 @@ def main() -> int:
     parser.add_argument("--command-timeout", type=float, default=0.25)
     parser.add_argument("--triangle-step", type=float, default=0.01)
     parser.add_argument("--triangle-rotation-step-deg", type=float, default=2.0)
+    parser.add_argument(
+        "--real-state-bind-ip",
+        default=None,
+        help="Enable physical-Panda mirror mode by binding to this address.",
+    )
+    parser.add_argument(
+        "--real-state-port",
+        type=int,
+        default=6201,
+        help="UDP port receiving physical Panda EE state as <6f>.",
+    )
+    parser.add_argument(
+        "--real-state-timeout",
+        type=float,
+        default=0.5,
+    )
     args = parser.parse_args()
 
     panda_xml = args.panda_xml.expanduser().resolve()

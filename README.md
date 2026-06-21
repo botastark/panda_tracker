@@ -31,6 +31,12 @@ python simulation/simulated_explorer_holder_camera.py \
   --panda-xml mujoco_menagerie/franka_emika_panda/panda.xml \
   --pbvs-config event_pbvs/pbvs_config_sim.json \
   --ee-body hand \
+  --command-bind-ip 127.0.0.1 \
+  --command-port 2600 \
+  --state-ip 127.0.0.1 \
+  --state-port 6200 \
+  --tracker-ip 127.0.0.1 \
+  --tracker-port 6500 \
   --triangle-step 0.05 \
   --triangle-rotation-step-deg 15 \
   --max-joint-speed 2.0 \

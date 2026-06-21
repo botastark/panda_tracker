@@ -132,11 +132,7 @@
         1.0
       ]
     ],
-    "holder_half_size": [
-      0.055,
-      0.04,
-      0.025
-    ],
+    "holder_half_size": [0.01, 0.019, 0.024],
     "holder_rgba": ".55 .55 .60 1",
     "stick_mount_H": [
       0.0,

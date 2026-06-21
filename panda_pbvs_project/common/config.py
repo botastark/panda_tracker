@@ -20,6 +20,7 @@ def _matrix(raw: dict[str, Any], name: str) -> np.ndarray:
 @dataclass(frozen=True)
 class PBVSConfig:
     control_rate_hz: float
+    control_orientation: bool
     kp_position: float
     kp_orientation: float
     max_linear_speed: float
@@ -58,6 +59,7 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
 
     return PBVSConfig(
         control_rate_hz=float(raw["control_rate_hz"]),
+        control_orientation=bool(raw.get("control_orientation", True)),
         kp_position=float(raw["kp_position"]),
         kp_orientation=float(raw["kp_orientation"]),
         max_linear_speed=float(raw["max_linear_speed"]),
