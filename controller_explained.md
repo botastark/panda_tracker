@@ -104,11 +104,7 @@ The controller can compare the measured and desired tip poses directly.
 One useful relative correction transform is:
 
 $$
-\boxed{
-T_{\Delta S}
-=
-T_{TS}^{-1}T_{TS}^{des}
-}
+\boxed{T_{\Delta S}=T_{TS}^{-1}T_{TS}^{des}}
 $$
 
 This transform describes the correction from the current stick-tip pose to the desired stick-tip pose.
@@ -141,41 +137,27 @@ $$
 we can infer the triangle pose in the Panda base:
 
 $$
-T_{BT}
-=
-T_{BS}T_{TS}^{-1}
+T_{BT}=T_{BS}T_{TS}^{-1}
 $$
 
 Then the desired stick-tip pose in the Panda base is:
 
 $$
-T_{BS}^{des}
-=
-T_{BT}T_{TS}^{des}
+T_{BS}^{des}=T_{BT}T_{TS}^{des}
 $$
 
 The corresponding desired robot EE pose is:
 
 $$
-T_{BE}^{des}
-=
-T_{BS}^{des}T_{ES}^{-1}
+T_{BE}^{des}=T_{BS}^{des}T_{ES}^{-1}
 $$
 
 Combining these equations gives:
 
 $$
-\boxed{
-T_{BE}^{des}
-=
-T_{BE}
-T_{ES}
-T_{TS}^{-1}
-T_{TS}^{des}
-T_{ES}^{-1}
-}
+\boxed{T_{BE}^{des}=T_{BE}T_{ES}T_{TS}^{-1}T_{TS}^{des}T_{ES}^{-1}}
 $$
-
+https://github.com/botastark/panda_tracker/edit/direct-t-ts-controller/controller_explained.md
 This is the central relationship for the direct-`T_TS` controller.
 
 It uses:
@@ -425,15 +407,7 @@ Output:
 with:
 
 $$
-\boxed{
-T_{BE}^{cmd}
-=
-T_{BE}
-T_{ES}
-T_{TS}^{-1}
-T_{TS}^{des}
-T_{ES}^{-1}
-}
+\boxed{T_{BE}^{cmd}=T_{BE}T_{ES}T_{TS}^{-1}T_{TS}^{des}T_{ES}^{-1}}
 $$
 
 That is the reference-frame equation around which the updated controller and information-flow diagram should be built.
