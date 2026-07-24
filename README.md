@@ -1,5 +1,6 @@
 source /home/bota/repos/panda_pbvs_sim/.venv/bin/activate
-bota@panda:~/Desktop$ source /home/bota/panda_tracker/.venv/bin/activate
+
+source /home/bota/panda_tracker/.venv/bin/activate
 
 conda deactivate
 cd /home/bota/repos/panda_pbvs_sim
