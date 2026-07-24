@@ -4,7 +4,8 @@ Understood. Then the controller interface should be defined as:
 
 $$
 \boxed{\text{Controller measurement input}=T_{TS}}
-$$, not `T_TC`.
+$$
+, not `T_TC`.
 
 Here:
 
