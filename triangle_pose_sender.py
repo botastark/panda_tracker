@@ -24,15 +24,16 @@ import argparse
 import math
 import signal
 import socket
-import struct
 import threading
 import time
 from dataclasses import dataclass
 from typing import Sequence
+from panda_pbvs_project.common.protocol import (
+    POSE_FORMAT,
+    POSE_SIZE,
+    pack_pose6,
+)
 
-
-POSE_FORMAT = "<6f"
-POSE_SIZE = struct.calcsize(POSE_FORMAT)
 
 
 def parse_destination(value: str) -> tuple[str, int]:
@@ -65,7 +66,7 @@ class TrianglePose:
         values = (self.x, self.y, self.z, self.roll, self.pitch, self.yaw)
         if not all(math.isfinite(value) for value in values):
             raise ValueError("Triangle pose contains a non-finite value.")
-        return struct.pack(POSE_FORMAT, *values)
+        return pack_pose6(values)
 
     def text(self) -> str:
         return (
