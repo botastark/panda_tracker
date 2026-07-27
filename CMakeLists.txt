@@ -25,6 +25,7 @@ target_link_libraries(ncs_common PUBLIC Franka::Franka Eigen3::Eigen3)
 set(NCSS
   explorer
   pose_reader
+  explorer_tracker
 )
 
 foreach(ncs ${NCSS})
