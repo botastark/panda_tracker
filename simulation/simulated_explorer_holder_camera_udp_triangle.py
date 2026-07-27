@@ -37,59 +37,19 @@ import mujoco.viewer
 import numpy as np
 PROJECT_DIR = Path(__file__).resolve().parents[1] / "panda_pbvs_project"
 sys.path.insert(0, str(PROJECT_DIR))
-
+from common.geometry import (
+    make_transform,
+    rotation_from_rpy,
+    rpy_from_rotation,
+    skew,
+    so3_log,
+)
 from common.protocol import (
     POSE_SIZE,
     pack_pose6,
     pack_task_pose,
     unpack_pose6,
 )
-
-
-def skew(v: np.ndarray) -> np.ndarray:
-    x, y, z = v
-    return np.array([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]])
-
-
-def so3_log(rotation: np.ndarray) -> np.ndarray:
-    cos_theta = np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0)
-    theta = math.acos(float(cos_theta))
-    if theta < 1e-8:
-        return 0.5 * np.array([
-            rotation[2, 1] - rotation[1, 2],
-            rotation[0, 2] - rotation[2, 0],
-            rotation[1, 0] - rotation[0, 1],
-        ])
-    return theta / (2.0 * math.sin(theta)) * np.array([
-        rotation[2, 1] - rotation[1, 2],
-        rotation[0, 2] - rotation[2, 0],
-        rotation[1, 0] - rotation[0, 1],
-    ])
-
-
-def rotation_from_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-    return np.array([
-        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-        [-sp, cp * sr, cp * cr],
-    ])
-
-
-def rpy_from_rotation(rotation: np.ndarray) -> np.ndarray:
-    pitch = math.atan2(-rotation[2, 0], math.hypot(rotation[0, 0], rotation[1, 0]))
-    roll = math.atan2(rotation[2, 1], rotation[2, 2])
-    yaw = math.atan2(rotation[1, 0], rotation[0, 0])
-    return np.array([roll, pitch, yaw])
-
-
-def make_transform(rotation: np.ndarray, position: np.ndarray) -> np.ndarray:
-    transform = np.eye(4)
-    transform[:3, :3] = rotation
-    transform[:3, 3] = position
-    return transform
 
 
 def quat_wxyz_from_rotation(rotation: np.ndarray) -> np.ndarray:
