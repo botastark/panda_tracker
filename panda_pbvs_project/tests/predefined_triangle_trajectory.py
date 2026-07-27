@@ -119,6 +119,15 @@ def parse_args() -> argparse.Namespace:
         default=1,
         help="Number of complete trajectory repetitions.",
     )
+    parser.add_argument(
+        "--initial-hold",
+        type=float,
+        default=15.0,
+        help=(
+            "Seconds to hold the first triangle pose before beginning "
+            "the moving trajectory."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -161,6 +170,8 @@ def publish_segment(
 
 def main() -> int:
     args = parse_args()
+    if args.initial_hold <= 0.0:
+        raise ValueError("--initial-hold must be positive.")
 
     if args.rate <= 0.0:
         raise ValueError("--rate must be positive.")
@@ -188,18 +199,23 @@ def main() -> int:
         for repetition in range(args.repeat):
             print(f"Trajectory repetition {repetition + 1}/{args.repeat}")
 
-            for waypoint in WAYPOINTS:
+            for waypoint_index, waypoint in enumerate(WAYPOINTS):
                 if not running[0]:
                     return 0
 
                 print(f"Starting: {waypoint.name}")
+                segment_duration = (
+                    args.initial_hold
+                    if repetition == 0 and waypoint_index == 0
+                    else waypoint.duration
+                )
 
                 publish_segment(
                     sock=sock,
                     destination=args.destination,
                     start=current,
                     target=waypoint.pose,
-                    duration=waypoint.duration,
+                    duration=segment_duration,
                     rate=args.rate,
                     running=running,
                 )

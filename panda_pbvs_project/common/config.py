@@ -25,6 +25,7 @@ class PBVSConfig:
     kp_orientation: float
     max_linear_speed: float
     max_angular_speed: float
+    max_command_lead: float
     panda_state_timeout: float
     tracker_timeout: float
     max_tracker_position_jump: float
@@ -72,6 +73,7 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         max_angular_speed=math.radians(
             float(raw["max_angular_speed_deg"])
         ),
+        max_command_lead=float(raw["max_command_lead"]),
         panda_state_timeout=float(raw["panda_state_timeout"]),
         tracker_timeout=float(raw["tracker_timeout"]),
         max_tracker_position_jump=float(
@@ -97,5 +99,7 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
             raw.get("tool_visualization", {})
         ),
     )
+    if config.max_command_lead <= 0.0:
+        raise ValueError("max_command_lead must be positive.")
 
     return config

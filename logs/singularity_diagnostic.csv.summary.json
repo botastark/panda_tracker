@@ -1,0 +1,18 @@
+{
+  "log_file": "logs/singularity_diagnostic.csv",
+  "duration_s": 49.08024794200173,
+  "valid_sample_count": 3773,
+  "tracking_sample_count": 3477,
+  "tracking_position_error_m": {
+    "mean": 0.02363516052808773,
+    "rms": 0.041286021429804004,
+    "p95": 0.08979852800503185,
+    "maximum": 0.18854594838143793
+  },
+  "tracking_orientation_error_deg": {
+    "mean": 0.42749062592395437,
+    "rms": 0.8573675389040627,
+    "p95": 2.0978212956932323,
+    "maximum": 4.226282866579667
+  }
+}

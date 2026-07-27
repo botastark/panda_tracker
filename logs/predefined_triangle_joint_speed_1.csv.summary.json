@@ -1,0 +1,18 @@
+{
+  "log_file": "logs/predefined_triangle_joint_speed_1.csv",
+  "duration_s": 70.15007247500034,
+  "valid_sample_count": 6203,
+  "tracking_sample_count": 5739,
+  "tracking_position_error_m": {
+    "mean": 0.022760406325549567,
+    "rms": 0.03686962195189349,
+    "p95": 0.055301266713653645,
+    "maximum": 0.18854594838152772
+  },
+  "tracking_orientation_error_deg": {
+    "mean": 0.5062809967024449,
+    "rms": 0.9343263806563153,
+    "p95": 2.2011215729284053,
+    "maximum": 4.3223202048041305
+  }
+}

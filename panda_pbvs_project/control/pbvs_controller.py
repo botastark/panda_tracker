@@ -52,7 +52,7 @@ class PBVSController:
 
         # Maximum distance between measured EE and commanded equilibrium.
         # Units: metres.
-        self.max_command_lead = 0.005
+        self.max_command_lead = self.config.max_command_lead
 
     def _task_pose_valid(
         self,

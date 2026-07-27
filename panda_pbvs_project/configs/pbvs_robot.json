@@ -8,6 +8,7 @@
   "kp_orientation": 0.5,
   "max_linear_speed": 0.04,
   "max_angular_speed_deg": 2.0,
+  "max_command_lead": 0.005,
   "panda_state_timeout": 0.1,
   "tracker_timeout": 0.1,
   "max_tracker_position_jump": 0.05,
