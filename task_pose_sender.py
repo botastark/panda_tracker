@@ -28,95 +28,27 @@ The published packet is a row-major 4x4 homogeneous transform T_TS:
     16 IEEE-754 float64 values
     exactly 128 bytes
 
-This matches the existing matrix-style tracker UDP transport, while changing
-the semantic meaning of the matrix from T_TC to T_TS.
+This is the canonical direct-controller task-pose transport.
 """
 
 from __future__ import annotations
 
 import argparse
-import math
 import signal
 import socket
-import struct
 import time
 from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
 
-
-TASK_POSE_FORMAT = "<16d"
-TASK_POSE_SIZE = struct.calcsize(TASK_POSE_FORMAT)
-
-
-def rotation_from_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    """Return R = Rz(yaw) @ Ry(pitch) @ Rx(roll)."""
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-
-    return np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ],
-        dtype=np.float64,
-    )
-
-
-def pose6_to_transform(pose6: Sequence[float] | np.ndarray) -> np.ndarray:
-    """Convert [x, y, z, roll, pitch, yaw] into the 4x4 transform T_TS."""
-    pose = np.asarray(pose6, dtype=np.float64).reshape(-1)
-
-    if pose.size != 6:
-        raise ValueError(f"pose6 must contain exactly 6 values; got {pose.size}.")
-    if not np.all(np.isfinite(pose)):
-        raise ValueError("pose6 contains a non-finite value.")
-
-    x_t_s, y_t_s, z_t_s, roll_t_s, pitch_t_s, yaw_t_s = pose
-
-    transform = np.eye(4, dtype=np.float64)
-    transform[:3, :3] = rotation_from_rpy(
-        float(roll_t_s),
-        float(pitch_t_s),
-        float(yaw_t_s),
-    )
-    transform[:3, 3] = [x_t_s, y_t_s, z_t_s]
-    return transform
-
-
-def validate_transform(transform: np.ndarray) -> np.ndarray:
-    """Validate a finite, approximately rigid 4x4 homogeneous transform."""
-    matrix = np.asarray(transform, dtype=np.float64)
-
-    if matrix.shape != (4, 4):
-        raise ValueError(f"T_TS must have shape (4, 4); got {matrix.shape}.")
-    if not np.all(np.isfinite(matrix)):
-        raise ValueError("T_TS contains a non-finite value.")
-    if not np.allclose(matrix[3], [0.0, 0.0, 0.0, 1.0], atol=1e-9):
-        raise ValueError("T_TS has an invalid homogeneous bottom row.")
-
-    rotation = matrix[:3, :3]
-    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6):
-        raise ValueError("T_TS rotation is not orthonormal.")
-    if not math.isclose(float(np.linalg.det(rotation)), 1.0, abs_tol=1e-6):
-        raise ValueError("T_TS rotation determinant is not +1.")
-
-    return matrix
-
-
-def pack_transform(transform: np.ndarray) -> bytes:
-    """Pack T_TS as little-endian, row-major <16d>."""
-    matrix = validate_transform(transform)
-    packet = struct.pack(TASK_POSE_FORMAT, *matrix.reshape(-1, order="C"))
-
-    if len(packet) != TASK_POSE_SIZE:
-        raise RuntimeError(
-            f"Unexpected packet size {len(packet)}; expected {TASK_POSE_SIZE}."
-        )
-    return packet
+from panda_pbvs_project.common.geometry import pose6_to_transform
+from panda_pbvs_project.common.protocol import (
+    MATRIX_FORMAT,
+    MATRIX_SIZE,
+    pack_task_pose,
+)
+from panda_pbvs_project.common.safety import finite_transform
 
 
 @dataclass
@@ -131,8 +63,14 @@ class TaskPosePublisher:
         self._destination = (self.destination_ip, self.destination_port)
 
     def publish_matrix(self, T_TS: np.ndarray) -> None:
-        """Publish one 4x4 T_TS matrix."""
-        self._socket.sendto(pack_transform(T_TS), self._destination)
+        """Publish one validated 4x4 T_TS matrix."""
+        if not finite_transform(T_TS):
+            raise ValueError("T_TS is not a valid homogeneous transform.")
+
+        self._socket.sendto(
+            pack_task_pose(T_TS),
+            self._destination,
+        )
 
     def publish_pose6(self, pose6: Sequence[float] | np.ndarray) -> np.ndarray:
         """Convert a six-value vision pose to T_TS, publish it, and return it."""
@@ -187,7 +125,7 @@ def main() -> int:
     print("pose6 =", np.array2string(pose6, precision=6))
     print("T_TS =\n", np.array2string(T_TS, precision=6, suppress_small=True))
     print(
-        f"Packet: {TASK_POSE_SIZE} bytes ({TASK_POSE_FORMAT}), "
+        f"Packet: {MATRIX_SIZE} bytes ({MATRIX_FORMAT}), "
         f"destination={args.destination_ip}:{args.destination_port}"
     )
 
