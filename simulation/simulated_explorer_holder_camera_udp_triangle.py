@@ -24,22 +24,26 @@ import argparse
 import json
 import math
 import socket
-import struct
 import threading
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+import sys
 
 import mujoco
 import mujoco.viewer
 import numpy as np
+PROJECT_DIR = Path(__file__).resolve().parents[1] / "panda_pbvs_project"
+sys.path.insert(0, str(PROJECT_DIR))
 
-
-POSE_FORMAT = "<6f"
-POSE_SIZE = struct.calcsize(POSE_FORMAT)
-TASK_POSE_FORMAT = "<16d"
+from common.protocol import (
+    POSE_SIZE,
+    pack_pose6,
+    pack_task_pose,
+    unpack_pose6,
+)
 
 
 def skew(v: np.ndarray) -> np.ndarray:
@@ -481,7 +485,7 @@ class CommandReceiver(threading.Thread):
             data, _ = sock.recvfrom(1024)
             if len(data) != POSE_SIZE:
                 continue
-            pose = np.asarray(struct.unpack(POSE_FORMAT, data), dtype=float)
+            pose = unpack_pose6(data)
             if np.all(np.isfinite(pose)):
                 self.latest.set(pose)
 
@@ -1073,10 +1077,7 @@ def main() -> int:
                     rpy = rpy_from_rotation(T_BE[:3, :3])
                     state = np.concatenate([T_BE[:3, 3], rpy])
                     state_socket.sendto(
-                        struct.pack(
-                            POSE_FORMAT,
-                            *state.astype(np.float32),
-                        ),
+                        pack_pose6(state),
                         (args.state_ip, args.state_port),
                     )
                     last_state_send = now
@@ -1095,12 +1096,8 @@ def main() -> int:
                     T_BT = body_transform(data, triangle_body_id)
                     T_BS = T_BE @ T_ES
                     T_TS = np.linalg.inv(T_BT) @ T_BS
-
                     task_pose_socket.sendto(
-                        struct.pack(
-                            TASK_POSE_FORMAT,
-                            *T_TS.reshape(-1),
-                        ),
+                        pack_task_pose(T_TS),
                         (args.task_pose_ip, args.task_pose_port),
                     )
                     last_task_pose_send = now
