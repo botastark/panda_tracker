@@ -73,14 +73,6 @@ def main() -> int:
         ),
     )
 
-    # Check consistency of the derived camera-to-stick transform.
-    expected_T_ES = config.T_EC @ config.T_CS
-
-    assert np.allclose(
-        config.T_ES,
-        expected_T_ES,
-        atol=1e-9,
-    ), "T_EC @ T_CS does not equal T_ES."
 
     identity = (
         config.T_ES

@@ -29,3 +29,9 @@ def unpack_matrix4(data: bytes) -> np.ndarray:
     if len(data) != MATRIX_SIZE:
         raise ValueError(f"Expected {MATRIX_SIZE} bytes, got {len(data)}.")
     return np.asarray(struct.unpack(MATRIX_FORMAT, data), dtype=float).reshape(4, 4)
+
+def pack_task_pose(T_TS: np.ndarray) -> bytes:
+    return pack_matrix4(T_TS)
+
+def unpack_task_pose(data: bytes) -> np.ndarray:
+    return unpack_matrix4(data)

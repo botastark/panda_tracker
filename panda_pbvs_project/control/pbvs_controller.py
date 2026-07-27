@@ -136,6 +136,7 @@ class PBVSController:
 
         if task_pose is None:
             self.command_pose = None
+            self.last_task_pose = None
             self.state = ControllerState.WAIT_FOR_TASK_POSE
             self.valid_count = 0
 
@@ -145,6 +146,17 @@ class PBVSController:
             )
 
         now = time.monotonic()
+
+        if now - task_pose.timestamp > self.config.tracker_timeout:
+            self.command_pose = None
+            self.last_task_pose = None
+            self.state = ControllerState.HOLD
+            self.valid_count = 0
+
+            return T_BE.copy(), PBVSDiagnostics(
+                self.state,
+                reason="task_pose_stale",
+            )
 
         if not self._task_pose_valid(task_pose, now):
             self.command_pose = None
@@ -161,7 +173,7 @@ class PBVSController:
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
-                reason="task_pose_invalid_stale_or_jump",
+                reason="task_pose_invalid_or_jump",
             )
 
         T_goal = self._goal_pose(

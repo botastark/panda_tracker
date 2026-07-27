@@ -157,7 +157,7 @@ Combining these equations gives:
 $$
 \boxed{T_{BE}^{des}=T_{BE}T_{ES}T_{TS}^{-1}T_{TS}^{des}T_{ES}^{-1}}
 $$
-https://github.com/botastark/panda_tracker/edit/direct-t-ts-controller/controller_explained.md
+
 This is the central relationship for the direct-`T_TS` controller.
 
 It uses:

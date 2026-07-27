@@ -1,0 +1,62 @@
+I now have terminal access to the physical Panda computer.
+
+Repository: `botastark/panda_tracker`
+Branch: `direct-t-ts-controller`
+
+Goal: verify that the physical robot and MuJoCo use exactly the same Panda Hand frame `E` before the holder, camera, and stick transforms are applied.
+
+Known MuJoCo hand transform:
+
+```text
+Source: mujoco_menagerie/franka_emika_panda/panda.xml
+
+<body name="hand"
+      pos="0 0 0.107"
+      quat="0.9238795 0 0 -0.3826834">
+```
+
+This corresponds to:
+
+```text
+T_FH_sim =
+[[ 0.7071068,  0.7071068, 0, 0     ],
+ [-0.7071068,  0.7071068, 0, 0     ],
+ [ 0,          0,         1, 0.107 ],
+ [ 0,          0,         0, 1     ]]
+```
+
+Please guide me through read-only checks to obtain these physical robot-state matrices:
+
+```text
+F_T_EE
+F_T_NE
+NE_T_EE
+EE_T_K
+```
+
+Requirements:
+
+* Do not move the robot.
+* Do not start a controller.
+* Do not call `Robot::setEE`, `Robot::setK`, or change Desk configuration.
+* Prefer libfranka’s existing `echo_robot_state` executable.
+* If it is unavailable, provide a minimal read-once diagnostic using `robot.readOnce()`.
+* Remember that libfranka matrices are stored column-major.
+* Verify numerically that:
+
+```text
+F_T_NE @ NE_T_EE == F_T_EE
+```
+
+Then compare the physical `F_T_EE` with `T_FH_sim`.
+
+Report:
+
+1. Whether the physical `EE` is the flange, Panda Hand, or another configured frame.
+2. Translation difference in millimetres.
+3. Rotation difference in degrees.
+4. Whether MuJoCo body `hand` can safely be used as the same controller frame `E`.
+5. The exact minimal change required if they differ.
+6. Whether `pbvs_robot.json` and `pbvs_sim.json` should share the same `T_ES`, `T_EC`, `T_CS`, and tool-visualization geometry.
+
+Do not modify any files until the measured matrices and comparison are shown.

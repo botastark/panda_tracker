@@ -26,97 +26,29 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import select
 import socket
-import struct
 import time
 from pathlib import Path
 
 import numpy as np
+from common.geometry import (
+    invert_transform,
+    pose6_to_transform,
+    transform_to_pose6,
+)
+from common.protocol import (
+    POSE_FORMAT,
+    POSE_SIZE,
+    MATRIX_FORMAT,
+    MATRIX_SIZE,
+    pack_pose6,
+    unpack_pose6,
+    pack_task_pose,
+    unpack_task_pose
 
-
-POSE6_FORMAT = "<6f"
-POSE6_SIZE = struct.calcsize(POSE6_FORMAT)
-MATRIX_FORMAT = "<16d"
-MATRIX_SIZE = struct.calcsize(MATRIX_FORMAT)
-
-
-def rotation_from_rpy(roll: float, pitch: float, yaw: float) -> np.ndarray:
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-
-    return np.array(
-        [
-            [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
-            [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
-            [-sp, cp * sr, cp * cr],
-        ],
-        dtype=float,
-    )
-
-
-def pose6_to_transform(values: tuple[float, ...]) -> np.ndarray:
-    x, y, z, roll, pitch, yaw = values
-    T = np.eye(4, dtype=float)
-    T[:3, :3] = rotation_from_rpy(roll, pitch, yaw)
-    T[:3, 3] = [x, y, z]
-    return T
-
-
-def project_to_so3(rotation: np.ndarray) -> np.ndarray:
-    u, _, vt = np.linalg.svd(np.asarray(rotation, dtype=float).reshape(3, 3))
-    result = u @ vt
-    if np.linalg.det(result) < 0.0:
-        u[:, -1] *= -1.0
-        result = u @ vt
-    return result
-
-
-def rpy_from_rotation(rotation: np.ndarray) -> np.ndarray:
-    R = project_to_so3(rotation)
-    pitch = math.atan2(
-        -R[2, 0],
-        math.hypot(R[0, 0], R[1, 0]),
-    )
-    roll = math.atan2(R[2, 1], R[2, 2])
-    yaw = math.atan2(R[1, 0], R[0, 0])
-    return np.array([roll, pitch, yaw], dtype=float)
-
-
-def transform_to_pose6(T: np.ndarray) -> np.ndarray:
-    return np.concatenate(
-        [
-            np.asarray(T[:3, 3], dtype=float),
-            rpy_from_rotation(T[:3, :3]),
-        ]
-    )
-
-
-def invert_transform(T: np.ndarray) -> np.ndarray:
-    R = T[:3, :3]
-    p = T[:3, 3]
-    result = np.eye(4, dtype=float)
-    result[:3, :3] = R.T
-    result[:3, 3] = -R.T @ p
-    return result
-
-
-def valid_transform(T: np.ndarray) -> bool:
-    if T.shape != (4, 4):
-        return False
-    if not np.all(np.isfinite(T)):
-        return False
-    if not np.allclose(T[3], [0.0, 0.0, 0.0, 1.0], atol=1e-6):
-        return False
-
-    R = T[:3, :3]
-    if not np.allclose(R.T @ R, np.eye(3), atol=1e-4):
-        return False
-    if not math.isclose(float(np.linalg.det(R)), 1.0, abs_tol=1e-4):
-        return False
-    return True
+)
+from common.safety import finite_transform
 
 
 def bind_udp(ip: str, port: int) -> socket.socket:
@@ -174,8 +106,6 @@ def main() -> int:
 
     raw = json.loads(args.config.read_text())
     T_ES = np.asarray(raw["T_ES"], dtype=float)
-    if not valid_transform(T_ES):
-        raise ValueError("Configured T_ES is not a valid rigid transform.")
 
     robot_socket = bind_udp(args.robot_bind_ip, args.robot_port)
     task_socket = bind_udp(args.task_bind_ip, args.task_port)
@@ -197,11 +127,11 @@ def main() -> int:
     print(
         "Predicted-task visualization bridge\n"
         f"  Panda T_BE input: {args.robot_bind_ip}:{args.robot_port} "
-        f"({POSE6_SIZE} bytes, {POSE6_FORMAT})\n"
+        f"({POSE_SIZE} bytes, {POSE_SIZE})\n"
         f"  predicted T_TS:   {args.task_bind_ip}:{args.task_port} "
         f"({MATRIX_SIZE} bytes, {MATRIX_FORMAT})\n"
         f"  MuJoCo T_BT out:  {args.triangle_ip}:{args.triangle_port} "
-        f"({POSE6_SIZE} bytes, {POSE6_FORMAT})\n"
+        f"({POSE_SIZE} bytes, {POSE_SIZE})\n"
     )
 
     try:
@@ -219,11 +149,11 @@ def main() -> int:
                 packet, source = sock.recvfrom(2048)
 
                 if sock is robot_socket:
-                    if len(packet) != POSE6_SIZE:
+                    if len(packet) != POSE_SIZE:
                         rejected_robot += 1
                         continue
 
-                    values = struct.unpack(POSE6_FORMAT, packet)
+                    values = unpack_pose6(packet)
                     if not np.all(np.isfinite(values)):
                         rejected_robot += 1
                         continue
@@ -236,10 +166,9 @@ def main() -> int:
                         rejected_task += 1
                         continue
 
-                    values = struct.unpack(MATRIX_FORMAT, packet)
-                    T_TS = np.asarray(values, dtype=float).reshape(4, 4)
+                    T_TS = unpack_task_pose(packet)
 
-                    if not valid_transform(T_TS):
+                    if not finite_transform(T_TS):
                         rejected_task += 1
                         continue
 
@@ -264,10 +193,7 @@ def main() -> int:
 
                 pose_BT = transform_to_pose6(T_BT)
                 output_socket.sendto(
-                    struct.pack(
-                        POSE6_FORMAT,
-                        *pose_BT.astype(np.float32),
-                    ),
+                    pack_pose6(pose_BT),
                     triangle_destination,
                 )
                 output_count += 1

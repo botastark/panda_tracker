@@ -16,25 +16,6 @@ def _matrix(raw: dict[str, Any], name: str) -> np.ndarray:
         raise ValueError(f"{name} contains invalid values.")
     return value
 
-def invert_transform(T: np.ndarray) -> np.ndarray:
-    """Invert a 4x4 rigid-body homogeneous transformation matrix."""
-    T = np.asarray(T, dtype=float)
-
-    if T.shape != (4, 4):
-        raise ValueError("Transform must be 4x4.")
-    if not np.all(np.isfinite(T)):
-        raise ValueError("Transform contains invalid values.")
-    if not np.allclose(T[3], [0.0, 0.0, 0.0, 1.0]):
-        raise ValueError("Transform has an invalid homogeneous bottom row.")
-
-    R = T[:3, :3]
-    t = T[:3, 3]
-
-    T_inv = np.eye(4, dtype=float)
-    T_inv[:3, :3] = R.T
-    T_inv[:3, 3] = -(R.T @ t)
-
-    return T_inv
 
 @dataclass(frozen=True)
 class PBVSConfig:
@@ -53,21 +34,10 @@ class PBVSConfig:
     consecutive_valid_required: int
     workspace_min: np.ndarray
     workspace_max: np.ndarray
-    # Tool and task transforms. 
-    T_EC: np.ndarray 
-    T_ES: np.ndarray 
+    # Direct-controller transforms.
+    T_ES: np.ndarray
     T_TS_des: np.ndarray
     tool_visualization: dict[str, Any]
-    
-    @property 
-    def T_CS(self) -> np.ndarray: 
-        """Pose of stick-tip frame S expressed in camera frame C.""" 
-        return invert_transform(self.T_EC) @ self.T_ES 
-    @property 
-    def T_TC_des(self) -> np.ndarray: 
-        """Legacy desired camera pose C expressed in triangle frame T.""" 
-        return self.T_TS_des @ invert_transform(self.T_CS)
-
 
 def load_pbvs_config(path: Path) -> PBVSConfig:
     raw = json.loads(path.read_text())
@@ -80,12 +50,8 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         workspace.get("max", [1.0, 1.0, 1.0]),
         dtype=float,
     )
-    T_EC = _matrix(raw, "T_EC")
     T_ES = _matrix(raw, "T_ES")
     T_TS_des = _matrix(raw, "T_TS_des")
-
-    if not finite_transform(T_EC):
-        raise ValueError("T_EC is not a valid homogeneous transform.")
 
     if not finite_transform(T_ES):
         raise ValueError("T_ES is not a valid homogeneous transform.")
@@ -125,7 +91,6 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         ),
         workspace_min=workspace_min,
         workspace_max=workspace_max,
-        T_EC=T_EC,
         T_ES=T_ES,
         T_TS_des=T_TS_des,
         tool_visualization=dict(
@@ -134,4 +99,3 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
     )
 
     return config
-
