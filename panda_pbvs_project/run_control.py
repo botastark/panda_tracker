@@ -13,6 +13,7 @@ from backends.mujoco_udp import MujocoUdpBackend
 from backends.panda_udp import PandaUdpBackend
 from common.config import load_pbvs_config
 from common.geometry import invert_transform
+from common.tracking_precision_logger import TrackingPrecisionLogger
 from control.pbvs_controller import PBVSController
 from perception.task_pose_udp import TaskPoseUdpSource
 
@@ -46,6 +47,15 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Compute commands but do not send them.",
+    )
+    parser.add_argument(
+        "--tracking-log",
+        type=Path,
+        default=None,
+        help=(
+            "Optional CSV path for T_TS tracking precision samples. "
+            "A .summary.json file is also written when the controller stops."
+        ),
     )
     return parser.parse_args()
 
@@ -118,6 +128,14 @@ def main() -> int:
     )
 
     controller = PBVSController(config)
+    tracking_logger = (
+        TrackingPrecisionLogger(args.tracking_log)
+        if args.tracking_log is not None
+        else None
+    )
+
+    if tracking_logger is not None:
+        print(f"Tracking precision log: {args.tracking_log}")
 
     period = 1.0 / config.control_rate_hz
     previous = time.monotonic()
@@ -163,6 +181,21 @@ def main() -> int:
                 task_pose=task_pose,
                 dt=dt,
             )
+            if (
+                tracking_logger is not None
+                and task_pose is not None
+            ):
+                tracking_logger.log(
+                    T_TS=task_pose.T_TS,
+                    T_TS_des=config.T_TS_des,
+                    controller_state=diagnostics.state.name,
+                    reason=diagnostics.reason,
+                    robot_state_age=robot_state_age,
+                    command_sent=(
+                        command is not None
+                        and not args.dry_run
+                    ),
+                )
 
             if (
                 loop_start - last_debug_print > 0.25
@@ -336,8 +369,10 @@ def main() -> int:
 
     except KeyboardInterrupt:
         print("\nStopping.")
-
     finally:
+        if tracking_logger is not None:
+            tracking_logger.close()
+
         task_pose_source.close()
         backend.close()
 
