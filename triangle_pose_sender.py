@@ -9,7 +9,6 @@ frame T expressed in the Panda base frame B.
 
 By default each packet is sent to:
     127.0.0.1:6601  MuJoCo simulator
-    127.0.0.1:6602  run_robot / run_control
 
 Interactive commands while streaming:
     set X Y Z R P Y       absolute pose; angles in degrees
@@ -130,10 +129,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         type=parse_destination,
         dest="destinations",
-        help=(
-            "Destination HOST:PORT; may be repeated. Defaults to "
-            "127.0.0.1:6601 and 127.0.0.1:6602."
-        ),
+        help="Destination HOST:PORT; may be repeated. Defaults to 127.0.0.1:6601.",
     )
     parser.add_argument(
         "--no-interactive",
@@ -191,7 +187,7 @@ def main() -> int:
     destinations = (
         args.destinations
         if args.destinations
-        else [("127.0.0.1", 6601), ("127.0.0.1", 6602)]
+        else [("127.0.0.1", 6601)]
     )
 
     shared_pose = SharedPose(
