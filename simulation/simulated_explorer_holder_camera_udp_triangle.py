@@ -9,16 +9,13 @@ Receives:
 
 Sends:
     state port 6200, <6f: simulated EE state (normal simulation mode)
-    tracker port 6500, <16d: synthetic tracker pose T_TC
+    task-pose port 6501, <16d: direct-controller task pose T_TS
 
 The triangle is never invented at a fixed offset. It remains hidden until a
 fresh external triangle pose is received. While triangle packets remain fresh,
-the simulator places the triangle in the scene and computes T_TC from the
-simulated camera pose and streamed triangle pose.
+the simulator places the triangle in the scene and computes:
 
-Because mirror mode currently receives only a 6-DoF end-effector pose, it
-matches the camera/end-effector pose but cannot guarantee the same redundant
-joint configuration as the physical seven-joint arm.
+    T_TS = inv(T_BT) @ T_BE @ T_ES
 """
 
 from __future__ import annotations
@@ -42,7 +39,7 @@ import numpy as np
 
 POSE_FORMAT = "<6f"
 POSE_SIZE = struct.calcsize(POSE_FORMAT)
-TRACKER_FORMAT = "<16d"
+TASK_POSE_FORMAT = "<16d"
 
 
 def skew(v: np.ndarray) -> np.ndarray:
@@ -106,20 +103,32 @@ def validate_transform(name: str, transform: np.ndarray) -> np.ndarray:
         raise ValueError(f"{name} contains non-finite values.")
     return transform
 
-
 def load_transform_config(
     path: Path,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     raw = json.loads(path.read_text())
-    T_EC = validate_transform("T_EC", np.asarray(raw["T_EC"], dtype=float))
-    T_CS = validate_transform("T_CS", np.asarray(raw["T_CS"], dtype=float))
-    T_TS_des = validate_transform(
-        "T_TS_des", np.asarray(raw["T_TS_des"], dtype=float)
+
+    T_ES = validate_transform(
+        "T_ES",
+        np.asarray(raw["T_ES"], dtype=float),
     )
-    
-    tool_visualization = raw.get("tool_visualization", {})
-    T_TC_des = T_TS_des @ np.linalg.inv(T_CS)
-    return T_EC, T_CS, T_TS_des, T_TC_des, tool_visualization
+    T_EC = validate_transform(
+        "T_EC",
+        np.asarray(raw["T_EC"], dtype=float),
+    )
+    T_CS = validate_transform(
+        "T_CS",
+        np.asarray(raw["T_CS"], dtype=float),
+    )
+
+    derived_T_ES = T_EC @ T_CS
+    if not np.allclose(T_ES, derived_T_ES, atol=1e-9):
+        raise ValueError(
+            "Configured T_ES does not equal T_EC @ T_CS. "
+            "Tool control and visualization frames are inconsistent."
+        )
+
+    return T_ES, T_EC, T_CS, raw.get("tool_visualization", {})
 
 
 def vector_string(vector: np.ndarray) -> str:
@@ -539,7 +548,7 @@ def main() -> int:
         "--pbvs-config",
         type=Path,
         required=True,
-        help="PBVS JSON config containing T_EC, T_CS, and T_TS_des.",
+        help="PBVS JSON config containing T_ES, T_EC, and T_CS.",
     )
     parser.add_argument("--ee-body", default="hand")
 
@@ -557,18 +566,13 @@ def main() -> int:
             "It is already published by default in normal simulation mode."
         ),
     )
-
-    parser.add_argument("--tracker-ip", default="127.0.0.1")
-    parser.add_argument("--tracker-port", type=int, default=6500)
+    parser.add_argument("--task-pose-ip", default="127.0.0.1")
+    parser.add_argument("--task-pose-port", type=int, default=6501)
     parser.add_argument(
-        "--disable-tracker-output",
+        "--disable-task-pose-output",
         action="store_true",
-        help=(
-            "Do not publish T_TC. Use this when an external bridge computes "
-            "tracker poses directly from physical Panda and triangle streams."
-        ),
+        help="Do not publish direct-controller T_TS packets.",
     )
-
     parser.add_argument(
         "--triangle-bind-ip",
         default="127.0.0.1",
@@ -586,7 +590,7 @@ def main() -> int:
         default=0.5,
         help=(
             "Maximum triangle-packet age in seconds. The triangle is hidden "
-            "and T_TC publication stops when the stream is stale."
+            "and T_TS publication stops when the stream is stale."
         ),
     )
 
@@ -629,11 +633,11 @@ def main() -> int:
     panda_xml = args.panda_xml.expanduser().resolve()
     config_path = args.pbvs_config.expanduser().resolve()
 
+
     (
+        T_ES,
         T_EC,
         T_CS,
-        _T_TS_des,
-        _T_TC_des,
         tool_visualization,
     ) = load_transform_config(config_path)
 
@@ -754,7 +758,7 @@ def main() -> int:
         )
 
     state_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    tracker_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    task_pose_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     # The external triangle stream is authoritative. Keep the triangle below
     # the floor until the first fresh packet arrives.
@@ -774,7 +778,7 @@ def main() -> int:
     target_transform = body_transform(data, ee_body_id)
     previous_time = time.monotonic()
     last_state_send = 0.0
-    last_tracker_send = 0.0
+    last_task_pose_send = 0.0
     last_status = 0.0
     last_waiting_print = 0.0
 
@@ -822,14 +826,14 @@ def main() -> int:
                     if not triangle_initialized:
                         print(
                             "Fresh triangle stream received; triangle is now "
-                            "visible and T_TC publication is enabled."
+                            "visible and T_TS publication is enabled."
                         )
                     triangle_initialized = True
                 else:
                     if triangle_initialized:
                         print(
                             "Triangle stream is stale; hiding triangle and "
-                            "pausing T_TC publication."
+                            "pausing T_TS publication."
                         )
                     triangle_initialized = False
                     data.mocap_pos[0] = np.array([0.0, 0.0, -1.0])
@@ -1077,29 +1081,29 @@ def main() -> int:
                     )
                     last_state_send = now
 
-                # Do not publish a tracker pose before the triangle has been
-                # initialized relative to the synchronized physical robot.
-                tracker_ready = (
-                    not args.disable_tracker_output
+                # Do not publish T_TS until the triangle pose is fresh and,
+                # in mirror mode, the physical robot state is also fresh.
+                task_pose_ready = (
+                    not args.disable_task_pose_output
                     and triangle_initialized
                     and (not mirror_mode or real_state_fresh)
                 )
                 if (
-                    tracker_ready
-                    and now - last_tracker_send >= 0.01
+                    task_pose_ready
+                    and now - last_task_pose_send >= 0.01
                 ):
-                    T_BC = T_BE @ T_EC
                     T_BT = body_transform(data, triangle_body_id)
-                    T_TC = np.linalg.inv(T_BT) @ T_BC
+                    T_BS = T_BE @ T_ES
+                    T_TS = np.linalg.inv(T_BT) @ T_BS
 
-                    tracker_socket.sendto(
+                    task_pose_socket.sendto(
                         struct.pack(
-                            TRACKER_FORMAT,
-                            *T_TC.reshape(-1),
+                            TASK_POSE_FORMAT,
+                            *T_TS.reshape(-1),
                         ),
-                        (args.tracker_ip, args.tracker_port),
+                        (args.task_pose_ip, args.task_pose_port),
                     )
-                    last_tracker_send = now
+                    last_task_pose_send = now
 
                 if now - last_status >= 1.0:
                     T_BC_visual = body_transform(
@@ -1167,7 +1171,8 @@ def main() -> int:
                 time.sleep(max(model.opt.timestep, 0.001))
     finally:
         state_socket.close()
-        tracker_socket.close()
+        task_pose_socket.close()
+
 
     return 0
 
