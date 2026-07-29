@@ -31,6 +31,10 @@ class TaskPoseMeasurement:
     T_TS: np.ndarray
     timestamp: float
     valid: bool = True
+    # Monotonically increasing identifier assigned when a UDP packet is
+    # received. Control-loop iterations that reuse the same latest packet
+    # therefore retain the same sequence_id.
+    sequence_id: int = 0
 
 @dataclass
 class PBVSDiagnostics:
@@ -45,6 +49,7 @@ class PBVSController:
         self.config = config
         self.state = ControllerState.WAIT_FOR_ROBOT
         self.last_task_pose: TaskPoseMeasurement | None = None
+        self.last_processed_task_sequence: int | None = None
         self.valid_count = 0
 
         # Persistent equilibrium pose sent to explorer.
@@ -128,6 +133,7 @@ class PBVSController:
             self.command_pose = None
             self.state = ControllerState.WAIT_FOR_ROBOT
             self.valid_count = 0
+            self.last_processed_task_sequence = None
 
             return None, PBVSDiagnostics(
                 self.state,
@@ -137,6 +143,7 @@ class PBVSController:
         if task_pose is None:
             self.command_pose = None
             self.last_task_pose = None
+            self.last_processed_task_sequence = None
             self.state = ControllerState.WAIT_FOR_TASK_POSE
             self.valid_count = 0
 
@@ -150,6 +157,7 @@ class PBVSController:
         if now - task_pose.timestamp > self.config.tracker_timeout:
             self.command_pose = None
             self.last_task_pose = None
+            self.last_processed_task_sequence = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
 
@@ -160,6 +168,7 @@ class PBVSController:
 
         if not self._task_pose_valid(task_pose, now):
             self.command_pose = None
+            self.last_processed_task_sequence = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
 
@@ -223,9 +232,15 @@ class PBVSController:
                 orientation_error=r_norm,
                 reason="error_exceeds_enable_threshold",
             )
+        is_new_measurement = (
+            self.last_processed_task_sequence
+            != task_pose.sequence_id
+        )
 
-        self.last_task_pose = task_pose
-        self.valid_count += 1
+        if is_new_measurement:
+            self.last_task_pose = task_pose
+            self.last_processed_task_sequence = task_pose.sequence_id
+            self.valid_count += 1
 
         if (
             self.valid_count

@@ -13,6 +13,7 @@ class TaskPoseUdpSource:
         self._lock = threading.Lock()
         self._latest: TaskPoseMeasurement | None = None
         self._running = True
+        self._next_sequence_id = 1
         self._thread = threading.Thread(
             target=self._receive_loop,
             args=(bind_ip, port),
@@ -38,13 +39,16 @@ class TaskPoseUdpSource:
 
                 matrix = unpack_matrix4(data)
                 valid = np.all(np.isfinite(matrix))
-                measurement = TaskPoseMeasurement(
-                    T_TS=matrix,
-                    timestamp=time.monotonic(),
-                    valid=valid,
-                )
                 with self._lock:
-                    self._latest = measurement
+                    sequence_id = self._next_sequence_id
+                    self._next_sequence_id += 1
+
+                    self._latest = TaskPoseMeasurement(
+                        T_TS=matrix,
+                        timestamp=time.monotonic(),
+                        valid=valid,
+                        sequence_id=sequence_id,
+                    )
         finally:
             sock.close()
 
