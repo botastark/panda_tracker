@@ -91,8 +91,9 @@ def load_transform_config(
             "Configured T_ES does not equal T_EC @ T_CS. "
             "Tool control and visualization frames are inconsistent."
         )
+    workspace = raw.get("workspace", {})
 
-    return T_ES, T_EC, T_CS, raw.get("tool_visualization", {})
+    return T_ES, T_EC, T_CS, raw.get("tool_visualization", {}), workspace
 
 
 def vector_string(vector: np.ndarray) -> str:
@@ -179,6 +180,7 @@ def create_scene_xml(
     T_EC: np.ndarray,
     T_CS: np.ndarray,
     tool_visualization: dict,
+    workspace: dict,
 ) -> Path:
     """Add the measured holder mesh, camera, and triangle geometry."""
     tree = ET.parse(panda_xml)
@@ -280,11 +282,7 @@ def create_scene_xml(
         add_axis_geoms(holder_body, 0.06)
 
     # All measured visual points are expressed in the holder frame H.
-    camera_body_center_H = config_vector(
-        tool_visualization,
-        "camera_body_center_H",
-        [0.050, 0.0, -0.0105],
-    )
+
     camera_half_size = config_vector(
         tool_visualization,
         "camera_half_size",
@@ -371,8 +369,27 @@ def create_scene_xml(
         "name": "pbvs_light", "pos": "0 0 2", "dir": "0 0 -1",
     })
     ET.SubElement(worldbody, "geom", {
-        "name": "pbvs_floor", "type": "plane", "size": "2 2 .1",
+        "name": "pbvs_floor", 
+        "type": "plane", 
+        "size": "2 2 .1",
         "rgba": ".85 .85 .85 1",
+    })
+    # workspace box is a visual cue for the PBVS workspace. It is not a collision object.
+    workspace_min = np.asarray(workspace["min"], dtype=float)
+    workspace_max = np.asarray(workspace["max"], dtype=float)
+
+    workspace_center = 0.5 * (workspace_min + workspace_max)
+    workspace_half_size = 0.5 * (workspace_max - workspace_min)
+
+    ET.SubElement(worldbody, "geom", {
+        "name": "pbvs_workspace_box",
+        "type": "box",
+        "pos": vector_string(workspace_center),
+        "size": vector_string(workspace_half_size),
+        "rgba": "0.2 0.8 0.2 0.35",
+        "contype": "0",
+        "conaffinity": "0",
+        "group": "0",
     })
 
     # TRIANGLE
@@ -624,6 +641,7 @@ def main() -> int:
         T_EC,
         T_CS,
         tool_visualization,
+        workspace
     ) = load_transform_config(config_path)
 
     scene_xml = create_scene_xml(
@@ -632,6 +650,7 @@ def main() -> int:
         T_EC,
         T_CS,
         tool_visualization,
+        workspace
     )
 
     model = mujoco.MjModel.from_xml_path(str(scene_xml))

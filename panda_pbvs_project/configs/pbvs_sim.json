@@ -18,9 +18,10 @@
   "max_enable_orientation_error_deg": 170.0,
   "consecutive_valid_required": 3,
   "tool_geometry_status": "nominal_mechanical_geometry_optical_extrinsic_pending",
+
   "workspace": {
-    "min": [-1.0, -1.0, -1.0],
-    "max": [1.0, 1.0, 1.0]
+    "min": [-0.41, -0.4, 0.05],
+    "max": [0.375, 0.95, 1.55]
   },
   "T_EC": [
     [0.0, -1.0, 0.0, 0.05],

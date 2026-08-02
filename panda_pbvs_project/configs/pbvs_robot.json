@@ -19,8 +19,8 @@
   "consecutive_valid_required": 20,
   "tool_geometry_status": "nominal_mechanical_geometry_do_not_enable_robot_until_calibrated",
   "workspace": {
-    "min": [-0.2, 0.36, 0.05],
-    "max": [0.2, 0.7, 0.55]
+    "min": [-0.41, -0.4, 0.05],
+    "max": [0.375, 0.95, 1.55]
   },
   "T_EC": [
     [0.0, -1.0, 0.0, 0.05],
