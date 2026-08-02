@@ -1,343 +1,85 @@
 {
-    "panda_ip": "127.0.0.1",
-    "panda_command_port": 2600,
-    "panda_state_bind_ip": "127.0.0.1",
-    "panda_state_port": 6200,
-    "control_rate_hz": 100.0,
-    "control_orientation": true,
-    "kp_position": 4.0,
-    "kp_orientation": 4.0,
-    "max_linear_speed": 0.3,
-    "max_angular_speed_deg": 90.0,
-    "max_command_lead": 0.020,
-    "panda_state_timeout": 0.5,
-    "tracker_timeout": 0.5,
-    "max_tracker_position_jump": 0.3,
-    "max_tracker_angle_jump_deg": 90.0,
-    "max_enable_position_error": 0.8,
-    "max_enable_orientation_error_deg": 170.0,
-    "consecutive_valid_required": 3,
-    "tool_geometry_status": "nominal_mechanical_geometry_optical_extrinsic_pending",
-    "workspace": {
-        "min": [
-            -1.0,
-            -1.0,
-            -1.0
-        ],
-        "max": [
-            1.0,
-            1.0,
-            1.0
-        ]
-    },
-    "T_EC": [
-        [
-            0.0,
-            -1.0,
-            0.0,
-            0.05
-        ],
-        [
-            1.0,
-            0.0,
-            0.0,
-            0.0
-        ],
-        [
-            0.0,
-            0.0,
-            1.0,
-            0.091
-        ],
-        [
-            0.0,
-            0.0,
-            0.0,
-            1.0
-        ]
+  "panda_ip": "127.0.0.1",
+  "panda_command_port": 2600,
+  "panda_state_bind_ip": "127.0.0.1",
+  "panda_state_port": 6200,
+  "control_rate_hz": 100.0,
+  "control_orientation": true,
+  "kp_position": 4.0,
+  "kp_orientation": 4.0,
+  "max_linear_speed": 0.3,
+  "max_angular_speed_deg": 90.0,
+  "max_command_lead": 0.02,
+  "panda_state_timeout": 0.5,
+  "tracker_timeout": 0.5,
+  "max_tracker_position_jump": 0.3,
+  "max_tracker_angle_jump_deg": 90.0,
+  "max_enable_position_error": 0.8,
+  "max_enable_orientation_error_deg": 170.0,
+  "consecutive_valid_required": 3,
+  "tool_geometry_status": "nominal_mechanical_geometry_optical_extrinsic_pending",
+  "workspace": {
+    "min": [-1.0, -1.0, -1.0],
+    "max": [1.0, 1.0, 1.0]
+  },
+  "T_EC": [
+    [0.0, -1.0, 0.0, 0.05],
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0965],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "T_CS": [
+    [0.0, 1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0, 0.05],
+    [0.0, 0.0, 1.0, 0.18725],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "T_TS_des": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, -1.0, 0.0, 0.0],
+    [0.0, 0.0, -1.0, 0.05],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "T_ES": [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.28375],
+    [0.0, 0.0, 0.0, 1.0]
+  ],
+  "tool_load_nominal": {
+    "mass_kg": 0.175,
+    "camera_and_lens_mass_kg": 0.098,
+    "printed_parts_and_sphere_mass_kg": 0.061,
+    "remaining_fasteners_and_cable_mass_kg": 0.016,
+    "center_of_mass_H_m": null,
+    "inertia_at_com_kg_m2": null
+  },
+  "tool_visualization": {
+    "show_debug_frames": true,
+    "T_hand_TCP": [
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0, 0.0415],
+      [0.0, 0.0, 0.0, 1.0]
     ],
-    "T_CS": [
-        [
-            0.0,
-            1.0,
-            0.0,
-            0.0
-        ],
-        [
-            -1.0,
-            0.0,
-            0.0,
-            0.05
-        ],
-        [
-            0.0,
-            0.0,
-            1.0,
-            0.164
-        ],
-        [
-            0.0,
-            0.0,
-            0.0,
-            1.0
-        ]
+    "T_mujoco_hand_H": [
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0, 0.062],
+      [0.0, 0.0, 0.0, 1.0]
     ],
-    "T_TS_des": [
-        [
-            1.0,
-            0.0,
-            0.0,
-            0.0
-        ],
-        [
-            0.0,
-            -1.0,
-            0.0,
-            0.0
-        ],
-        [
-            0.0,
-            0.0,
-            -1.0,
-            0.05
-        ],
-        [
-            0.0,
-            0.0,
-            0.0,
-            1.0
-        ]
+    "T_mujoco_hand_E": [
+      [1.0, 0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0, 0.0],
+      [0.0, 0.0, 1.0, -0.0036],
+      [0.0, 0.0, 0.0, 1.0]
     ],
-    "T_ES": [
-        [
-            1.0,
-            0.0,
-            0.0,
-            0.0
-        ],
-        [
-            0.0,
-            1.0,
-            0.0,
-            0.0
-        ],
-        [
-            0.0,
-            0.0,
-            1.0,
-            0.255
-        ],
-        [
-            0.0,
-            0.0,
-            0.0,
-            1.0
-        ]
-    ],
-    "tool_load_nominal": {
-        "mass_kg": 0.175,
-        "camera_and_lens_mass_kg": 0.098,
-        "printed_parts_and_sphere_mass_kg": 0.061,
-        "remaining_fasteners_and_cable_mass_kg": 0.016,
-        "center_of_mass_H_m": null,
-        "inertia_at_com_kg_m2": null
-    },
-    "tool_visualization": {
-        "show_debug_frames": false,
-        "T_mujoco_hand_E": [
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                -0.0036
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ]
-        ],
-        "T_EH": [
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                0.062
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ]
-        ],
-        "T_HC": [
-            [
-                0.0,
-                -1.0,
-                0.0,
-                0.05
-            ],
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                0.029
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ]
-        ],
-        "T_HS": [
-            [
-                1.0,
-                0.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                1.0,
-                0.0,
-                0.0
-            ],
-            [
-                0.0,
-                0.0,
-                1.0,
-                0.193
-            ],
-            [
-                0.0,
-                0.0,
-                0.0,
-                1.0
-            ]
-        ],
-        "finger_distance": 0.038,
-        "holder_half_size": [
-            0.01,
-            0.019,
-            0.024
-        ],
-        "holder_center_H": [
-            0.0,
-            0.0,
-            0.024
-        ],
-        "holder_rgba": ".08 .08 .09 1",
-        "camera_support_1_holder_H": [
-            0.01,
-            -0.012,
-            0.012
-        ],
-        "camera_support_2_holder_H": [
-            0.01,
-            0.012,
-            0.012
-        ],
-        "camera_support_1_camera_H": [
-            0.035,
-            -0.012,
-            0.012
-        ],
-        "camera_support_2_camera_H": [
-            0.035,
-            0.012,
-            0.012
-        ],
-        "camera_support_half_thickness": 0.004,
-        "camera_support_rgba": ".08 .08 .09 1",
-        "stick_mount_H": [
-            0.0,
-            0.0,
-            0.045
-        ],
-        "rod_end_H": [
-            0.0,
-            0.0,
-            0.179
-        ],
-        "rod_half_size": [
-            0.005,
-            0.005,
-            0.067
-        ],
-        "sphere_center_H": [
-            0.0,
-            0.0,
-            0.186
-        ],
-        "stick_radius": 0.007,
-        "camera_c_mount_center_H": [
-            0.05,
-            0.0,
-            0.01
-        ],
-        "camera_optical_origin_H": [
-            0.05,
-            0.0,
-            0.029
-        ],
-        "camera_body_center_H": [
-            0.05,
-            0.0,
-            -0.008
-        ],
-        "camera_half_size": [
-            0.015,
-            0.015,
-            0.018
-        ],
-        "camera_lens_start_H": [
-            0.05,
-            0.0,
-            0.01
-        ],
-        "camera_lens_end_H": [
-            0.05,
-            0.0,
-            0.043
-        ],
-        "camera_lens_radius": 0.016,
-        "camera_lens_axis_C": [
-            0.0,
-            0.0,
-            1.0
-        ]
-    }
+
+    "finger_distance": 0.038,
+    "camera_body_center_H": [0.05, 0.0, -0.0105],
+    "camera_half_size": [0.015, 0.015, 0.0165],
+    "camera_lens_start_H": [0.05, 0.0, 0.006],
+    "camera_lens_end_H": [0.05, 0.0, 0.044],
+    "camera_lens_radius": 0.016
+  }
 }
