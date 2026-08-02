@@ -33,6 +33,13 @@ class PBVSConfig:
     max_enable_position_error: float
     max_enable_orientation_error: float
     consecutive_valid_required: int
+
+    # Target-motion feedforward.
+    target_feedforward_enabled: bool
+    target_velocity_filter_alpha: float
+    max_target_linear_speed: float
+    max_target_angular_speed: float
+
     workspace_min: np.ndarray
     workspace_max: np.ndarray
     # Direct-controller transforms.
@@ -91,6 +98,26 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
         consecutive_valid_required=int(
             raw["consecutive_valid_required"]
         ),
+        target_feedforward_enabled=bool(
+            raw.get("target_feedforward_enabled", False)
+        ),
+        target_velocity_filter_alpha=float(
+            raw.get("target_velocity_filter_alpha", 0.25)
+        ),
+        max_target_linear_speed=float(
+            raw.get(
+                "max_target_linear_speed",
+                raw["max_linear_speed"],
+            )
+        ),
+        max_target_angular_speed=math.radians(
+            float(
+                raw.get(
+                    "max_target_angular_speed_deg",
+                    raw["max_angular_speed_deg"],
+                )
+            )
+        ),
         workspace_min=workspace_min,
         workspace_max=workspace_max,
         T_ES=T_ES,
@@ -99,6 +126,21 @@ def load_pbvs_config(path: Path) -> PBVSConfig:
             raw.get("tool_visualization", {})
         ),
     )
+    if not 0.0 < config.target_velocity_filter_alpha <= 1.0:
+        raise ValueError(
+            "target_velocity_filter_alpha must be in (0, 1]."
+        )
+
+    if config.max_target_linear_speed < 0.0:
+        raise ValueError(
+            "max_target_linear_speed must be non-negative."
+        )
+
+
+    if config.max_target_angular_speed < 0.0:
+        raise ValueError(
+            "max_target_angular_speed must be non-negative."
+        )
     if config.max_command_lead <= 0.0:
         raise ValueError("max_command_lead must be positive.")
 

@@ -43,6 +43,11 @@ class PBVSDiagnostics:
     orientation_error: float = 0.0
     reason: str = ""
 
+    target_linear_speed: float = 0.0
+    target_angular_speed: float = 0.0
+    commanded_linear_speed: float = 0.0
+    commanded_angular_speed: float = 0.0
+    command_lead: float = 0.0
 
 class PBVSController:
     def __init__(self, config: PBVSConfig) -> None:
@@ -58,6 +63,32 @@ class PBVSController:
         # Maximum distance between measured EE and commanded equilibrium.
         # Units: metres.
         self.max_command_lead = self.config.max_command_lead
+
+        self.target_feedforward_enabled = bool(
+            getattr(config, "target_feedforward_enabled", False)
+        )
+        self.target_velocity_filter_alpha = float(
+            getattr(config, "target_velocity_filter_alpha", 0.25)
+        )
+        self.max_target_linear_speed = float(
+            getattr(
+                config,
+                "max_target_linear_speed",
+                self.config.max_linear_speed,
+            )
+        )
+        self.max_target_angular_speed = float(
+            getattr(
+                config,
+                "max_target_angular_speed",
+                self.config.max_angular_speed,
+            )
+        )
+
+        self.last_goal_pose: np.ndarray | None = None
+        self.last_goal_timestamp: float | None = None
+        self.target_linear_velocity = np.zeros(3)
+        self.target_angular_velocity = np.zeros(3)
 
     def _task_pose_valid(
         self,
@@ -119,6 +150,68 @@ class PBVSController:
 
         return T_BE @ delta_T_E
 
+    def _reset_target_velocity_estimator(self) -> None:
+        self.last_goal_pose = None
+        self.last_goal_timestamp = None
+        self.target_linear_velocity = np.zeros(3)
+        self.target_angular_velocity = np.zeros(3)
+
+    def _update_target_velocity_estimate(
+        self,
+        goal_pose: np.ndarray,
+        measurement_timestamp: float,
+    ) -> None:
+        if (
+            self.last_goal_pose is None
+            or self.last_goal_timestamp is None
+        ):
+            self.last_goal_pose = goal_pose.copy()
+            self.last_goal_timestamp = measurement_timestamp
+            self.target_linear_velocity = np.zeros(3)
+            self.target_angular_velocity = np.zeros(3)
+            return
+
+        sample_dt = measurement_timestamp - self.last_goal_timestamp
+
+        if sample_dt <= 1e-6 or sample_dt > self.config.tracker_timeout:
+            self.last_goal_pose = goal_pose.copy()
+            self.last_goal_timestamp = measurement_timestamp
+            self.target_linear_velocity = np.zeros(3)
+            self.target_angular_velocity = np.zeros(3)
+            return
+
+        raw_linear_velocity = (
+            goal_pose[:3, 3] - self.last_goal_pose[:3, 3]
+        ) / sample_dt
+
+        raw_angular_velocity = so3_log(
+            self.last_goal_pose[:3, :3].T
+            @ goal_pose[:3, :3]
+        ) / sample_dt
+
+        raw_linear_velocity = clamp_norm(
+            raw_linear_velocity,
+            self.max_target_linear_speed,
+        )
+        raw_angular_velocity = clamp_norm(
+            raw_angular_velocity,
+            self.max_target_angular_speed,
+        )
+
+        alpha = self.target_velocity_filter_alpha
+
+        self.target_linear_velocity = (
+            (1.0 - alpha) * self.target_linear_velocity
+            + alpha * raw_linear_velocity
+        )
+        self.target_angular_velocity = (
+            (1.0 - alpha) * self.target_angular_velocity
+            + alpha * raw_angular_velocity
+        )
+
+        self.last_goal_pose = goal_pose.copy()
+        self.last_goal_timestamp = measurement_timestamp
+
     def step(
         self,
         T_BE: np.ndarray | None,
@@ -134,6 +227,7 @@ class PBVSController:
             self.state = ControllerState.WAIT_FOR_ROBOT
             self.valid_count = 0
             self.last_processed_task_sequence = None
+            self._reset_target_velocity_estimator()
 
             return None, PBVSDiagnostics(
                 self.state,
@@ -146,6 +240,7 @@ class PBVSController:
             self.last_processed_task_sequence = None
             self.state = ControllerState.WAIT_FOR_TASK_POSE
             self.valid_count = 0
+            self._reset_target_velocity_estimator()
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
@@ -160,6 +255,7 @@ class PBVSController:
             self.last_processed_task_sequence = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
+            self._reset_target_velocity_estimator()
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
@@ -179,6 +275,7 @@ class PBVSController:
                 # Do not update last_task_pose here.
                 # A rejected jump must not become the new baseline.
                 pass
+            self._reset_target_velocity_estimator()
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
@@ -225,6 +322,7 @@ class PBVSController:
             self.command_pose = None
             self.state = ControllerState.HOLD
             self.valid_count = 0
+            self._reset_target_velocity_estimator()
 
             return T_BE.copy(), PBVSDiagnostics(
                 self.state,
@@ -241,6 +339,10 @@ class PBVSController:
             self.last_task_pose = task_pose
             self.last_processed_task_sequence = task_pose.sequence_id
             self.valid_count += 1
+            self._update_target_velocity_estimate(
+                T_goal,
+                task_pose.timestamp,
+            )
 
         if (
             self.valid_count
@@ -255,15 +357,31 @@ class PBVSController:
                 orientation_error=r_norm,
                 reason="waiting_for_consecutive_valid_measurements",
             )
+        target_linear_velocity = (
+            self.target_linear_velocity
+            if self.target_feedforward_enabled
+            else np.zeros(3)
+        )
+
+        target_angular_velocity = (
+            self.target_angular_velocity
+            if (
+                self.target_feedforward_enabled
+                and self.config.control_orientation
+            )
+            else np.zeros(3)
+        )
 
         linear_velocity = clamp_norm(
-            self.config.kp_position * p_error,
+            target_linear_velocity
+            + self.config.kp_position * p_error,
             self.config.max_linear_speed,
         )
 
         if self.config.control_orientation:
             angular_velocity = clamp_norm(
-                self.config.kp_orientation * r_error,
+                target_angular_velocity
+                + self.config.kp_orientation * r_error,
                 self.config.max_angular_speed,
             )
         else:
@@ -315,36 +433,6 @@ class PBVSController:
             self.config.workspace_max,
         )
 
-        command_lead_after_clamp = (
-            command[:3, 3]
-            - T_BE[:3, 3]
-        )
-
-        print(
-            "current_EE_xyz=",
-            np.array2string(
-                T_BE[:3, 3],
-                precision=6,
-            ),
-            "p_error=",
-            np.array2string(
-                p_error,
-                precision=6,
-            ),
-            "command_xyz=",
-            np.array2string(
-                command[:3, 3],
-                precision=6,
-            ),
-            "command_lead=",
-            np.array2string(
-                command_lead_after_clamp,
-                precision=6,
-            ),
-            "lead_norm_mm=",
-            f"{1000.0 * np.linalg.norm(command_lead_after_clamp):.3f}",
-        )
-
         self.command_pose = command.copy()
         self.state = ControllerState.TRACKING
 
@@ -352,4 +440,19 @@ class PBVSController:
             self.state,
             position_error=p_norm,
             orientation_error=r_norm,
+            target_linear_speed=float(
+                np.linalg.norm(self.target_linear_velocity)
+            ),
+            target_angular_speed=float(
+                np.linalg.norm(self.target_angular_velocity)
+            ),
+            commanded_linear_speed=float(
+                np.linalg.norm(linear_velocity)
+            ),
+            commanded_angular_speed=float(
+                np.linalg.norm(angular_velocity)
+            ),
+            command_lead=float(
+                np.linalg.norm(command_lead)
+            ),
         )
