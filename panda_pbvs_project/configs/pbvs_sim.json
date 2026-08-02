@@ -17,7 +17,11 @@
   "max_enable_position_error": 0.8,
   "max_enable_orientation_error_deg": 170.0,
   "consecutive_valid_required": 3,
-  "tool_geometry_status": "nominal_mechanical_geometry_optical_extrinsic_pending",
+
+  "target_feedforward_enabled": true,
+  "target_velocity_filter_alpha": 0.25,
+  "max_target_linear_speed": 0.03,
+  "max_target_angular_speed_deg": 3.0,
 
   "workspace": {
     "min": [-0.41, -0.4, 0.05],

@@ -14,7 +14,7 @@ from backends.panda_udp import PandaUdpBackend
 from common.config import load_pbvs_config
 from common.geometry import invert_transform
 from common.tracking_precision_logger import TrackingPrecisionLogger
-from control.pbvs_controller import PBVSController
+from control.pbvs_controller import ControllerState, PBVSController
 from perception.task_pose_udp import TaskPoseUdpSource
 
 
@@ -65,24 +65,6 @@ def main() -> int:
 
     raw = json.loads(args.config.read_text())
     config = load_pbvs_config(args.config)
-
-    print("Configured T_ES:")
-    print(
-        np.array2string(
-            config.T_ES,
-            precision=6,
-            suppress_small=True,
-        )
-    )
-
-    print(
-        "stick_tip_xyz_in_E =",
-        np.array2string(
-            config.T_ES[:3, 3],
-            precision=6,
-        ),
-    )
-
 
     identity = (
         config.T_ES
@@ -140,9 +122,8 @@ def main() -> int:
     period = 1.0 / config.control_rate_hz
     previous = time.monotonic()
 
-    last_print = 0.0
-    last_command_print = 0.0
-    last_debug_print = 0.0
+    startup_deadline = time.monotonic() + 5.0
+    seen_first_task_pose = False
 
     print(
         f"Backend: {args.backend}; "
@@ -175,6 +156,18 @@ def main() -> int:
             # Read the latest task measurement exactly once.
             task_pose = task_pose_source.get_latest()
 
+            if args.backend == "panda":
+                if task_pose is not None:
+                    seen_first_task_pose = True
+                elif not seen_first_task_pose and time.monotonic() > startup_deadline:
+                    print(
+                        "\nERROR: No T_TS received on "
+                        f"{args.tracker_bind_ip}:{args.tracker_port} "
+                        "within startup timeout in Panda mode."
+                    )
+                    print("Check that the real tracker is running and publishing T_TS.")
+                    return 1
+
             command, diagnostics = controller.step(
                 T_BE=T_BE,
                 robot_state_age=robot_state_age,
@@ -191,152 +184,12 @@ def main() -> int:
                     controller_state=diagnostics.state.name,
                     reason=diagnostics.reason,
                     robot_state_age=robot_state_age,
-                    command_sent=(
-                        command is not None
-                        and not args.dry_run
+                    command_sent=tracking_command_sent(
+                        command=command,
+                        dry_run=args.dry_run,
+                        controller_state=diagnostics.state,
                     ),
                 )
-
-            if (
-                loop_start - last_debug_print > 0.25
-                and T_BE is not None
-                and task_pose is not None
-            ):
-                T_TS = task_pose.T_TS
-
-                # Physical stick-tip pose in Panda base.
-                T_BS = T_BE @ config.T_ES
-
-                # T_TS = inv(T_BT) @ T_BS
-                # Therefore:
-                # T_BT = T_BS @ inv(T_TS)
-                T_BT = (
-                    T_BS
-                    @ invert_transform(T_TS)
-                )
-
-                T_goal = controller._goal_pose(
-                    T_BE,
-                    T_TS,
-                )
-
-                position_error = (
-                    T_goal[:3, 3]
-                    - T_BE[:3, 3]
-                )
-
-                print(
-                    "\n--- PBVS TASK-POSE DEBUG ---"
-                )
-
-                print(
-                    "current_EE_xyz =",
-                    np.array2string(
-                        T_BE[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "stick_tip_xyz  =",
-                    np.array2string(
-                        T_BS[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "triangle_xyz   =",
-                    np.array2string(
-                        T_BT[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "measured_TS_xyz=",
-                    np.array2string(
-                        T_TS[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "desired_TS_xyz =",
-                    np.array2string(
-                        config.T_TS_des[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "goal_EE_xyz    =",
-                    np.array2string(
-                        T_goal[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "position_error =",
-                    np.array2string(
-                        position_error,
-                        precision=6,
-                    ),
-                )
-
-                print(
-                    "command_xyz    =",
-                    (
-                        "None"
-                        if command is None
-                        else np.array2string(
-                            command[:3, 3],
-                            precision=6,
-                        )
-                    ),
-                )
-
-                print(
-                    "command_lead   =",
-                    (
-                        "None"
-                        if command is None
-                        else np.array2string(
-                            (
-                                command[:3, 3]
-                                - T_BE[:3, 3]
-                            ),
-                            precision=6,
-                        )
-                    ),
-                )
-
-                last_debug_print = loop_start
-
-            if (
-                command is not None
-                and loop_start - last_command_print
-                > 0.25
-            ):
-                print(
-                    "current_xyz=",
-                    (
-                        None
-                        if T_BE is None
-                        else np.array2string(
-                            T_BE[:3, 3],
-                            precision=6,
-                        )
-                    ),
-                    "command_xyz=",
-                    np.array2string(
-                        command[:3, 3],
-                        precision=6,
-                    ),
-                )
-
-                last_command_print = loop_start
 
             if (
                 command is not None
@@ -344,20 +197,6 @@ def main() -> int:
             ):
                 backend.send_target_pose(command)
 
-            if loop_start - last_print > 0.5:
-                print(
-                    f"state={diagnostics.state.name}, "
-                    f"|e_p|="
-                    f"{diagnostics.position_error:.4f} m, "
-                    f"|e_R|="
-                    f"{math.degrees(
-                        diagnostics.orientation_error
-                    ):.2f} deg, "
-                    f"reason="
-                    f"{diagnostics.reason or '-'}"
-                )
-
-                last_print = loop_start
 
             elapsed = time.monotonic() - loop_start
             time.sleep(
@@ -377,6 +216,24 @@ def main() -> int:
         backend.close()
 
     return 0
+def tracking_command_sent(
+    *,
+    command: np.ndarray | None,
+    dry_run: bool,
+    controller_state: ControllerState,
+) -> bool:
+    """
+    Return True only when an active tracking command was transmitted.
+
+    READY and HOLD may still transmit a pose to maintain the robot's
+    current position, but those are not active tracking commands.
+    """
+
+    return (
+        command is not None
+        and not dry_run
+        and controller_state is ControllerState.TRACKING
+    )
 
 
 if __name__ == "__main__":

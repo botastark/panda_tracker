@@ -4,7 +4,6 @@ sudo ss -lunp | grep -E ':(2600|6200|6500)\b'
 kill -CONT PID
 kill PID
 
-
 ## Running the Physical Panda, Digital Twin, and PBVS Controller
 
 This setup runs the physical Panda, the MuJoCo digital twin, and the PBVS controller on the same computer.
@@ -73,36 +72,29 @@ Leave this process running.
 
 ### 4. Start the MuJoCo digital twin
 
-From the repository root:
+#### Example: Simulation mode
+
+1. Start MuJoCo simulator so it publishes simulated `T_BE` and `T_TS`.
+2. Start the controller in simulation mode:
 
 ```bash
-python simulation/simulated_explorer_holder_camera_udp_triangle.py\
-  --panda-xml mujoco_menagerie/franka_emika_panda/panda.xml \
+python panda_pbvs_project/run_control.py \
+  --backend sim \
+  --config panda_pbvs_project/configs/pbvs_sim.json
+```
+
+#### Real robot mode
+
+If running MuJoCo as a mirror/visualizer:
+
+```bash
+python simulation/simulated_explorer_tool.py \
+  --panda-xml <path-to-panda.xml> \
   --pbvs-config panda_pbvs_project/configs/pbvs_robot.json \
-  --ee-body hand \
   --real-state-bind-ip 127.0.0.1 \
   --real-state-port 6202 \
-  --tracker-ip 127.0.0.1 \
-  --tracker-port 6501 \
-  --max-joint-speed 2.0 \
-  --kp-position 10.0 \
-  --kp-orientation 8.0
+  --disable-task-pose-output
 ```
-
-The simulator first waits for the physical Panda state, synchronizes its end-effector pose, initializes the triangle, and then starts publishing `T_TC`.
-
-Expected transition:
-
-```text
-mode=mirror-waiting-for-state
-```
-
-followed by:
-
-```text
-mode=mirror-synchronizing
-```
-and finally a synchronization message indicating that tracker streaming is enabled.
 
 ### 5. Start the PBVS controller
 

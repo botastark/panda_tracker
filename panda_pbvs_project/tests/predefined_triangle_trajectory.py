@@ -49,29 +49,99 @@ def pose(
     )
 
 
-WAYPOINTS = (
-    Waypoint("center", 3.0, pose(0.50, 0.00, 0.40)),
-    Waypoint("move_positive_x", 3.0, pose(0.54, 0.00, 0.40)),
-    Waypoint("move_positive_y", 3.0, pose(0.54, 0.04, 0.40)),
-    Waypoint("move_positive_z", 3.0, pose(0.54, 0.04, 0.44)),
-    Waypoint(
-        "rotate_yaw",
-        3.0,
-        pose(0.54, 0.04, 0.44, yaw_deg=10.0),
-    ),
-    Waypoint(
-        "rotate_pitch",
-        3.0,
-        pose(
-            0.54,
-            0.04,
-            0.44,
-            pitch_deg=-8.0,
-            yaw_deg=10.0,
-        ),
-    ),
-    Waypoint("return_center", 5.0, pose(0.50, 0.00, 0.40)),
+DEFAULT_CENTER_POSE = pose(
+    0.50,
+    0.00,
+    0.40,
 )
+
+
+def build_waypoints(
+    center: np.ndarray,
+) -> tuple[Waypoint, ...]:
+    """
+    Build the predefined trajectory relative to an equilibrium pose.
+
+    Translation offsets are expressed in the Panda base frame. Rotation
+    offsets are added to the equilibrium roll, pitch, and yaw values.
+    """
+
+    center = np.asarray(center, dtype=float).reshape(6)
+
+    def offset(
+        *,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        dz: float = 0.0,
+        droll_deg: float = 0.0,
+        dpitch_deg: float = 0.0,
+        dyaw_deg: float = 0.0,
+    ) -> np.ndarray:
+        result = center.copy()
+
+        result[:3] += np.array(
+            [dx, dy, dz],
+            dtype=float,
+        )
+
+        result[3:] += np.radians(
+            [
+                droll_deg,
+                dpitch_deg,
+                dyaw_deg,
+            ]
+        )
+
+        return result
+
+    return (
+        Waypoint(
+            "center",
+            3.0,
+            center.copy(),
+        ),
+        Waypoint(
+            "move_positive_x",
+            3.0,
+            offset(dx=0.04),
+        ),
+        Waypoint(
+            "move_positive_y",
+            3.0,
+            offset(dx=0.04, dy=0.04),
+        ),
+        Waypoint(
+            "move_positive_z",
+            3.0,
+            offset(dx=0.04, dy=0.04, dz=0.04),
+        ),
+        Waypoint(
+            "rotate_yaw",
+            3.0,
+            offset(
+                dx=0.04,
+                dy=0.04,
+                dz=0.04,
+                dyaw_deg=10.0,
+            ),
+        ),
+        Waypoint(
+            "rotate_pitch",
+            3.0,
+            offset(
+                dx=0.04,
+                dy=0.04,
+                dz=0.04,
+                dpitch_deg=-8.0,
+                dyaw_deg=10.0,
+            ),
+        ),
+        Waypoint(
+            "return_center",
+            5.0,
+            center.copy(),
+        ),
+    )
 
 
 def parse_destination(value: str) -> tuple[str, int]:
@@ -128,6 +198,32 @@ def parse_args() -> argparse.Namespace:
             "the moving trajectory."
         ),
     )
+
+    parser.add_argument(
+        "--center-pose",
+        nargs=6,
+        type=float,
+        default=[
+            0.50,
+            0.00,
+            0.40,
+            0.00,
+            0.00,
+            0.00,
+        ],
+        metavar=(
+            "X",
+            "Y",
+            "Z",
+            "ROLL_DEG",
+            "PITCH_DEG",
+            "YAW_DEG",
+        ),
+        help=(
+            "Equilibrium triangle pose in the Panda base frame. "
+            "Position is in metres and orientation is in degrees."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -178,7 +274,8 @@ def main() -> int:
 
     if args.repeat < 1:
         raise ValueError("--repeat must be at least 1.")
-
+    center = pose(*args.center_pose)
+    waypoints = build_waypoints(center)
     running = [True]
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -188,7 +285,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, request_stop)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    current = WAYPOINTS[0].pose.copy()
+    current = waypoints[0].pose.copy()
 
     print(
         f"Publishing to {args.destination[0]}:{args.destination[1]} "
@@ -199,7 +296,7 @@ def main() -> int:
         for repetition in range(args.repeat):
             print(f"Trajectory repetition {repetition + 1}/{args.repeat}")
 
-            for waypoint_index, waypoint in enumerate(WAYPOINTS):
+            for waypoint_index, waypoint in enumerate(waypoints):
                 if not running[0]:
                     return 0
 
