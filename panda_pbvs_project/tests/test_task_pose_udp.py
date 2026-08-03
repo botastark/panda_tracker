@@ -14,11 +14,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 from common.protocol import (  # noqa: E402
-    TASK_POSE_LEGACY_VERSION,
-    TASK_POSE_V2_VERSION,
-    decode_task_pose_packet,
+    TASK_POSE_MAGIC,
+    TASK_POSE_SIZE,
+    TASK_POSE_VERSION,
     pack_task_pose,
-    pack_task_pose_v2,
+    unpack_task_pose,
 )
 from perception.task_pose_udp import (  # noqa: E402
     TaskPosePacketFilter,
@@ -35,22 +35,18 @@ def transform(
 
 
 class TaskPoseProtocolTests(unittest.TestCase):
-    def test_v2_round_trip(self) -> None:
+    def test_round_trip(self) -> None:
         T_TS = transform(x=0.123)
 
-        decoded = decode_task_pose_packet(
-            pack_task_pose_v2(
-                T_TS,
-                sequence_id=42,
-                confidence=0.75,
-                valid=True,
-            )
+        encoded = pack_task_pose(
+            T_TS,
+            sequence_id=42,
+            confidence=0.75,
+            valid=True,
         )
+        decoded = unpack_task_pose(encoded)
 
-        self.assertEqual(
-            decoded.version,
-            TASK_POSE_V2_VERSION,
-        )
+        self.assertEqual(len(encoded), TASK_POSE_SIZE)
         self.assertEqual(decoded.sequence_id, 42)
         self.assertAlmostEqual(
             decoded.confidence,
@@ -65,28 +61,50 @@ class TaskPoseProtocolTests(unittest.TestCase):
             atol=0.0,
         )
 
-    def test_legacy_packet_remains_supported(
+    def test_unsupported_128_byte_packet_is_rejected(
         self,
     ) -> None:
-        T_TS = transform(x=0.456)
+        unsupported_packet = bytes(128)
 
-        decoded = decode_task_pose_packet(
-            pack_task_pose(T_TS)
-        )
+        with self.assertRaises(ValueError):
+            unpack_task_pose(
+                unsupported_packet
+            )
 
-        self.assertEqual(
-            decoded.version,
-            TASK_POSE_LEGACY_VERSION,
+    def test_invalid_magic_is_rejected(self) -> None:
+        encoded = bytearray(
+            pack_task_pose(
+                transform(),
+                sequence_id=1,
+                confidence=1.0,
+            )
         )
-        self.assertIsNone(decoded.sequence_id)
-        self.assertEqual(decoded.confidence, 1.0)
-        self.assertTrue(decoded.valid)
+        encoded[:4] = b"BAD!"
 
-        np.testing.assert_allclose(
-            decoded.T_TS,
-            T_TS,
-            atol=0.0,
+        with self.assertRaises(ValueError):
+            unpack_task_pose(bytes(encoded))
+
+    def test_unsupported_version_is_rejected(
+        self,
+    ) -> None:
+        encoded = bytearray(
+            pack_task_pose(
+                transform(),
+                sequence_id=1,
+                confidence=1.0,
+            )
         )
+        encoded[4] = TASK_POSE_VERSION + 1
+
+        with self.assertRaises(ValueError):
+            unpack_task_pose(bytes(encoded))
+
+    def test_protocol_constants_are_expected(
+        self,
+    ) -> None:
+        self.assertEqual(TASK_POSE_MAGIC, b"PTP2")
+        self.assertEqual(TASK_POSE_VERSION, 2)
+        self.assertEqual(TASK_POSE_SIZE, 148)
 
 
 class TaskPosePacketFilterTests(unittest.TestCase):
@@ -103,7 +121,7 @@ class TaskPosePacketFilterTests(unittest.TestCase):
         confidence: float = 0.90,
         valid: bool = True,
     ) -> bytes:
-        return pack_task_pose_v2(
+        return pack_task_pose(
             transform(x=x),
             sequence_id=sequence_id,
             confidence=confidence,
@@ -125,7 +143,7 @@ class TaskPosePacketFilterTests(unittest.TestCase):
             10.0,
         )
         self.assertEqual(
-            self.packet_filter.last_v2_source_sequence,
+            self.packet_filter.last_source_sequence,
             1,
         )
 
@@ -149,9 +167,6 @@ class TaskPosePacketFilterTests(unittest.TestCase):
 
         self.assertIsNotNone(first)
         self.assertIsNone(duplicate)
-
-        # Because no replacement measurement was produced, the source
-        # will retain the original timestamp of 10.0.
         self.assertEqual(first.timestamp, 10.0)
 
     def test_older_sequence_is_ignored(self) -> None:
@@ -170,7 +185,7 @@ class TaskPosePacketFilterTests(unittest.TestCase):
         self.assertIsNotNone(newest)
         self.assertIsNone(reordered)
         self.assertEqual(
-            self.packet_filter.last_v2_source_sequence,
+            self.packet_filter.last_source_sequence,
             10,
         )
 
@@ -212,15 +227,13 @@ class TaskPosePacketFilterTests(unittest.TestCase):
         T_TS = transform()
         T_TS[0, 3] = np.nan
 
-        data = pack_task_pose_v2(
-            T_TS,
-            sequence_id=1,
-            confidence=0.90,
-        )
-
         measurement = (
             self.packet_filter.process_datagram(
-                data,
+                pack_task_pose(
+                    T_TS,
+                    sequence_id=1,
+                    confidence=0.90,
+                ),
                 arrival_time=10.0,
             )
         )
@@ -240,28 +253,17 @@ class TaskPosePacketFilterTests(unittest.TestCase):
 
         self.assertIsNone(measurement)
 
-    def test_legacy_packets_remain_operational(
+    def test_unsupported_128_byte_packet_is_ignored(
         self,
     ) -> None:
-        first = self.packet_filter.process_datagram(
-            pack_task_pose(transform(x=0.0)),
-            arrival_time=10.0,
+        measurement = (
+            self.packet_filter.process_datagram(
+                bytes(128),
+                arrival_time=10.0,
+            )
         )
 
-        second = self.packet_filter.process_datagram(
-            pack_task_pose(transform(x=0.1)),
-            arrival_time=11.0,
-        )
-
-        self.assertIsNotNone(first)
-        self.assertIsNotNone(second)
-        self.assertTrue(first.valid)
-        self.assertTrue(second.valid)
-
-        self.assertGreater(
-            second.sequence_id,
-            first.sequence_id,
-        )
+        self.assertIsNone(measurement)
 
 
 if __name__ == "__main__":

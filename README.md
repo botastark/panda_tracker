@@ -4,6 +4,47 @@ sudo ss -lunp | grep -E ':(2600|6200|6500)\b'
 kill -CONT PID
 kill PID
 
+## Running PBVS Controller on Mujico simulator
+
+### MuJoCo simulator
+
+Start MuJoCo simulator so it publishes simulated `T_BE` and `T_TS`.
+
+```bash
+python simulation/simulated_explorer_tool.py \
+  --panda-xml mujoco_menagerie/franka_emika_panda/panda.xml \
+  --pbvs-config panda_pbvs_project/configs/pbvs_sim.json \
+  optional:
+  --headless \
+  --headless-duration 180
+
+```
+
+### PBVS controller
+
+```bash
+python panda_pbvs_project/run_control.py \
+  --backend sim \
+  --config panda_pbvs_project/configs/pbvs_sim.json
+```
+
+### Test predefined Triangle motion
+
+```bash
+python tests/predefined_triangle_trajectory.py \
+  --destination 127.0.0.1:6601 \
+  --rate 30 \
+  --repeat 1 \
+  --initial-hold 15 \
+  --center-pose \
+    0.0 \
+    0.554499507 \
+    0.294352422 \
+    0.0 \
+    0.0\
+    90.0
+```
+
 ## Running the Physical Panda, Digital Twin, and PBVS Controller
 
 This setup runs the physical Panda, the MuJoCo digital twin, and the PBVS controller on the same computer.
@@ -72,24 +113,11 @@ Leave this process running.
 
 ### 4. Start the MuJoCo digital twin
 
-#### Example: Simulation mode
-
-1. Start MuJoCo simulator so it publishes simulated `T_BE` and `T_TS`.
-2. Start the controller in simulation mode:
-
-```bash
-python panda_pbvs_project/run_control.py \
-  --backend sim \
-  --config panda_pbvs_project/configs/pbvs_sim.json
-```
-
-#### Real robot mode
-
 If running MuJoCo as a mirror/visualizer:
 
 ```bash
 python simulation/simulated_explorer_tool.py \
-  --panda-xml <path-to-panda.xml> \
+  --panda-xml  mujoco_menagerie/franka_emika_panda/panda.xml \
   --pbvs-config panda_pbvs_project/configs/pbvs_robot.json \
   --real-state-bind-ip 127.0.0.1 \
   --real-state-port 6202 \
@@ -98,12 +126,10 @@ python simulation/simulated_explorer_tool.py \
 
 ### 5. Start the PBVS controller
 
-From `panda_pbvs_project`:
-
 ```bash
-python3 run_control.py \
+python panda_pbvs_project/run_control.py  \
   --backend panda \
-  --config configs/pbvs_robot.json \
+  --config panda_pbvs_project/configs/pbvs_robot.json \
   --tracker-bind-ip 127.0.0.1 \
   --tracker-port 6501
 ```

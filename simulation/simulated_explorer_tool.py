@@ -47,7 +47,7 @@ from common.geometry import (
 from common.protocol import (
     POSE_SIZE,
     pack_pose6,
-    pack_task_pose,
+    pack_task_pose_v2,
     unpack_pose6,
 )
 
@@ -825,6 +825,7 @@ def main() -> int:
     previous_time = time.monotonic()
     last_state_send = 0.0
     last_task_pose_send = 0.0
+    task_pose_sequence_id = 0
     last_waiting_print = 0.0
 
     real_state_fresh = False
@@ -1141,8 +1142,10 @@ def main() -> int:
                     T_BT = body_transform(data, triangle_body_id)
                     T_BS = T_BE @ T_ES
                     T_TS = np.linalg.inv(T_BT) @ T_BS
+
+                    task_pose_sequence_id += 1
                     task_pose_socket.sendto(
-                        pack_task_pose(T_TS),
+                        pack_task_pose_v2(T_TS, sequence_id=0, confidence=1.0, valid=True),
                         (args.task_pose_ip, args.task_pose_port),
                     )
                     last_task_pose_send = now

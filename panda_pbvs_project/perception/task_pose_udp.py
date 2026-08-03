@@ -1,31 +1,23 @@
 from __future__ import annotations
 
+import socket
 import struct
 import threading
 import time
 
-import socket
-
 import numpy as np
 
-from common.protocol import (
-    TASK_POSE_LEGACY_VERSION,
-    decode_task_pose_packet,
-)
+from common.protocol import unpack_task_pose
 from common.safety import finite_transform
 from control.pbvs_controller import TaskPoseMeasurement
 
 
 class TaskPosePacketFilter:
     """
-    Convert task-pose datagrams into controller measurements.
+    Convert versioned task-pose datagrams into controller measurements.
 
-    Version-2 duplicates and reordered packets are ignored. Ignored
-    packets do not create a new measurement and therefore do not refresh
-    the controller freshness timestamp.
-
-    Legacy matrix-only packets remain supported temporarily and are
-    treated as new measurements because they contain no source sequence.
+    Duplicate, reordered, malformed, and unsupported packets are ignored.
+    Ignored packets do not refresh the controller freshness timestamp.
     """
 
     def __init__(
@@ -38,21 +30,17 @@ class TaskPosePacketFilter:
                 "minimum_confidence must be between 0 and 1."
             )
 
-        self.minimum_confidence = (
-            float(minimum_confidence)
+        self.minimum_confidence = float(
+            minimum_confidence
         )
-
-        self._last_v2_source_sequence: int | None = None
-
-        # Controller-facing sequence numbers are local and always
-        # increase, regardless of which packet version is received.
+        self._last_source_sequence: int | None = None
         self._next_measurement_sequence = 1
 
     @property
-    def last_v2_source_sequence(
+    def last_source_sequence(
         self,
     ) -> int | None:
-        return self._last_v2_source_sequence
+        return self._last_source_sequence
 
     def process_datagram(
         self,
@@ -60,40 +48,20 @@ class TaskPosePacketFilter:
         *,
         arrival_time: float,
     ) -> TaskPoseMeasurement | None:
-        """
-        Return a new controller measurement, or None when the datagram
-        should be ignored.
-
-        None is returned for:
-        - malformed packets,
-        - duplicate version-2 sequences,
-        - older/reordered version-2 sequences.
-        """
-
         try:
-            packet = decode_task_pose_packet(data)
-        except (ValueError, struct_error):
+            packet = unpack_task_pose(data)
+        except (ValueError, struct.error):
             return None
 
-        if packet.version != TASK_POSE_LEGACY_VERSION:
-            if packet.sequence_id is None:
-                return None
+        if (
+            self._last_source_sequence is not None
+            and packet.sequence_id
+            <= self._last_source_sequence
+        ):
+            return None
 
-            if (
-                self._last_v2_source_sequence is not None
-                and packet.sequence_id
-                <= self._last_v2_source_sequence
-            ):
-                # Duplicate or reordered packet.
-                # Crucially, arrival_time is not propagated.
-                return None
-
-            # Record the source sequence even when confidence or validity
-            # causes this observation to be rejected. A retransmission of
-            # the same invalid observation must not look new.
-            self._last_v2_source_sequence = (
-                packet.sequence_id
-            )
+        # Record every new source observation, including an invalid one.
+        self._last_source_sequence = packet.sequence_id
 
         T_TS = np.asarray(
             packet.T_TS,
@@ -111,24 +79,11 @@ class TaskPosePacketFilter:
             T_TS=T_TS,
             timestamp=float(arrival_time),
             valid=valid,
-            sequence_id=(
-                self._next_measurement_sequence
-            ),
+            sequence_id=self._next_measurement_sequence,
         )
 
         self._next_measurement_sequence += 1
-
         return measurement
-
-
-# Avoid importing struct solely for one exception name in the main logic.
-# struct.error inherits from Exception but not ValueError.
-try:
-    import struct
-
-    struct_error = struct.error
-except ImportError:  # pragma: no cover
-    struct_error = Exception
 
 
 class TaskPoseUdpSource:
@@ -142,7 +97,6 @@ class TaskPoseUdpSource:
         self._lock = threading.Lock()
         self._latest: TaskPoseMeasurement | None = None
         self._running = True
-
         self._filter = TaskPosePacketFilter(
             minimum_confidence=minimum_confidence,
         )
