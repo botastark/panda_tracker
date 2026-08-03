@@ -733,11 +733,6 @@ def main() -> int:
         math.degrees(data.qpos[joint7_qpos_address]),
         "deg",
     )
-    print(
-        "finger separation:",
-        1000.0 * finger_distance,
-        "mm",
-    )
 
     ee_body_id = mujoco.mj_name2id(
         model,
@@ -830,7 +825,6 @@ def main() -> int:
     previous_time = time.monotonic()
     last_state_send = 0.0
     last_task_pose_send = 0.0
-    last_status = 0.0
     last_waiting_print = 0.0
 
     real_state_fresh = False
@@ -843,7 +837,6 @@ def main() -> int:
 
     print("Simulation started.")
     print("Triangle is controlled by the external UDP pose stream.")
-    print(f"EE body: {args.ee_body}; generated scene: {scene_xml}")
     if mirror_mode and not publish_sim_state:
         print(
             "Simulated EE-state publication is disabled in mirror mode "
@@ -1154,67 +1147,6 @@ def main() -> int:
                     )
                     last_task_pose_send = now
 
-                if now - last_status >= 1.0:
-                    T_BC_visual = body_transform(
-                        data,
-                        camera_body_id,
-                    )
-                    T_BS_visual = body_transform(
-                        data,
-                        tip_body_id,
-                    )
-
-                    mode_status = "simulation"
-                    if mirror_mode:
-                        mode_status = (
-                            "mirror-following"
-                            if real_state_fresh
-                            else "mirror-waiting-for-state"
-                        )
-
-                    triangle_status = (
-                        "fresh" if triangle_fresh else "waiting/stale"
-                    )
-
-                    status = (
-                        f"mode={mode_status}, triangle={triangle_status}, "
-                        f"current_EE_xyz="
-                        f"{np.round(T_BE[:3, 3], 3)}, "
-                        f"camera_xyz="
-                        f"{np.round(T_BC_visual[:3, 3], 3)}, "
-                        f"tip_xyz="
-                        f"{np.round(T_BS_visual[:3, 3], 3)}\n"
-                        "inner_EE_error: "
-                        f"|e_p|={np.linalg.norm(position_error):.4f} m, "
-                        "|e_R|="
-                        f"{math.degrees(np.linalg.norm(orientation_error)):.2f} deg, "
-                        f"sigma_min={sigma_min:.4f}"
-                    )
-
-                    if triangle_fresh:
-                        T_BT_visual = body_transform(data, triangle_body_id)
-                        tip_triangle_distance = float(
-                            np.linalg.norm(
-                                T_BT_visual[:3, 3]
-                                - T_BS_visual[:3, 3]
-                            )
-                        )
-                        camera_triangle_distance = float(
-                            np.linalg.norm(
-                                T_BT_visual[:3, 3]
-                                - T_BC_visual[:3, 3]
-                            )
-                        )
-                        status += (
-                            "\ntriangle_xyz="
-                            f"{np.round(T_BT_visual[:3, 3], 3)}, "
-                            f"tip_distance={tip_triangle_distance:.4f} m, "
-                            "camera_distance="
-                            f"{camera_triangle_distance:.4f} m"
-                        )
-
-                    print(status)
-                    last_status = now
 
                 viewer.sync()
                 time.sleep(max(model.opt.timestep, 0.001))

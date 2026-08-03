@@ -1,0 +1,18 @@
+{
+  "log_file": "results/iter01_feedforward/feedforward_on.csv",
+  "duration_s": 51.74445676299911,
+  "valid_sample_count": 4279,
+  "tracking_sample_count": 3433,
+  "tracking_position_error_m": {
+    "mean": 0.0028556745486035067,
+    "rms": 0.004830316072154658,
+    "p95": 0.011430417243992597,
+    "maximum": 0.015333093422396221
+  },
+  "tracking_orientation_error_deg": {
+    "mean": 1.014071996752319,
+    "rms": 1.9350587630878235,
+    "p95": 4.34466365717505,
+    "maximum": 5.343151963503832
+  }
+}

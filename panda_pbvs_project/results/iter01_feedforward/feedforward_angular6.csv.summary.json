@@ -1,0 +1,18 @@
+{
+  "log_file": "results/iter01_feedforward/feedforward_angular6.csv",
+  "duration_s": 44.364691791999576,
+  "valid_sample_count": 3715,
+  "tracking_sample_count": 3501,
+  "tracking_position_error_m": {
+    "mean": 0.001955809779414935,
+    "rms": 0.0032530150076313493,
+    "p95": 0.007344741149462511,
+    "maximum": 0.00864330685863911
+  },
+  "tracking_orientation_error_deg": {
+    "mean": 0.5123992048828709,
+    "rms": 0.9991340178373097,
+    "p95": 2.219296085470363,
+    "maximum": 3.252914080144124
+  }
+}
