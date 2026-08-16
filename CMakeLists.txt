@@ -1,41 +1,95 @@
-cmake_minimum_required(VERSION 3.4)
+cmake_minimum_required(VERSION 3.16)
 
-project(libfranka-ncs CXX)
+project(panda_tracker VERSION 0.1.0 LANGUAGES CXX)
 
-list(INSERT CMAKE_MODULE_PATH 0 ${CMAKE_CURRENT_LIST_DIR}/../cmake)
+option(
+  PANDA_TRACKER_BUILD_ROBOT
+  "Build the read-only libfranka hardware observer"
+  ON
+)
 
-set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include(CTest)
+include(GNUInstallDirs)
 
-if(NOT FRANKA_IS_FOUND)
-    find_package(Franka REQUIRED)
-endif()
-find_package(Eigen3 REQUIRED)
-find_package(Poco REQUIRED COMPONENTS Foundation)
-
-set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-add_library(ncs_common STATIC
-  ncs_common.cpp
+add_library(panda_tracker_protocol STATIC
+  cpp/src/task_pose_protocol.cpp
 )
 
-target_link_libraries(ncs_common PUBLIC Franka::Franka Eigen3::Eigen3)
-
-set(NCSS
-  explorer
-  pose_reader
-  explorer_tracker
+target_include_directories(panda_tracker_protocol
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/cpp/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-foreach(ncs ${NCSS})
-  add_executable(${ncs} ${ncs}.cpp)
-  target_link_libraries(${ncs} Franka::Franka ncs_common Eigen3::Eigen3)
-endforeach()
-   
+target_compile_features(panda_tracker_protocol PUBLIC cxx_std_17)
 
-include(GNUInstallDirs)
-install(TARGETS ${NCSS}
-  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(panda_tracker_protocol PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+  )
+endif()
+
+if(BUILD_TESTING)
+  add_executable(test_task_pose_protocol
+    cpp/tests/test_task_pose_protocol.cpp
+  )
+  target_link_libraries(test_task_pose_protocol
+    PRIVATE panda_tracker_protocol
+  )
+  add_test(NAME task_pose_protocol COMMAND test_task_pose_protocol)
+endif()
+
+add_executable(fake_task_pose_sender
+  cpp/src/fake_task_pose_sender.cpp
+)
+target_link_libraries(fake_task_pose_sender
+  PRIVATE
+    Threads::Threads
+    panda_tracker_protocol
+)
+target_compile_features(fake_task_pose_sender PRIVATE cxx_std_17)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(fake_task_pose_sender PRIVATE
+    -Wall
+    -Wextra
+    -Wpedantic
+  )
+endif()
+
+install(TARGETS fake_task_pose_sender
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+if(PANDA_TRACKER_BUILD_ROBOT)
+  if(NOT TARGET Franka::Franka)
+    find_package(Franka REQUIRED)
+  endif()
+
+  add_executable(pbvs_observer
+    cpp/src/pbvs_observer.cpp
+  )
+  target_link_libraries(pbvs_observer
+    PRIVATE
+      Franka::Franka
+      Threads::Threads
+      panda_tracker_protocol
+  )
+  target_compile_features(pbvs_observer PRIVATE cxx_std_17)
+
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(pbvs_observer PRIVATE
+      -Wall
+      -Wextra
+      -Wpedantic
+    )
+  endif()
+
+  install(TARGETS pbvs_observer
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  )
+endif()
