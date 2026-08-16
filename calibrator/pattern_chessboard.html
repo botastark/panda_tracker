@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Event-camera blinking checkerboard</title>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: rgb(127, 127, 127);
+      font-family: sans-serif;
+    }
+
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+    }
+
+    #controls {
+      position: absolute;
+      z-index: 1;
+      top: 8px;
+      left: 8px;
+      padding: 8px 10px;
+      color: black;
+      background: rgba(255, 255, 255, 0.9);
+      border: 1px solid #555;
+      border-radius: 4px;
+      font-size: 14px;
+    }
+
+    #controls.hidden {
+      display: none;
+    }
+
+    button {
+      margin-right: 8px;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="pattern"></canvas>
+  <div id="controls">
+    <button id="toggle" type="button">Pause</button>
+    <span id="status"></span>
+  </div>
+
+  <script>
+    "use strict";
+
+    const parameters = new URLSearchParams(window.location.search);
+
+    function positiveInteger(name, fallback) {
+      if (!parameters.has(name)) return fallback;
+      const value = Number(parameters.get(name));
+      if (!Number.isInteger(value) || value < 2 || value > 50) {
+        throw new Error(`${name} must be an integer in [2, 50]`);
+      }
+      return value;
+    }
+
+    function positiveNumber(name, fallback, maximum) {
+      if (!parameters.has(name)) return fallback;
+      const value = Number(parameters.get(name));
+      if (!Number.isFinite(value) || value <= 0 || value > maximum) {
+        throw new Error(`${name} must be in (0, ${maximum}]`);
+      }
+      return value;
+    }
+
+    // These names describe inner corners. OpenCV patternSize is (cols, rows).
+    const innerRows = positiveInteger("rows", 6);
+    const innerCols = positiveInteger("cols", 9);
+    const blinkHz = positiveNumber("hz", 12, 30);
+    const requestedSquarePx = parameters.has("square_px")
+      ? positiveNumber("square_px", 0, 2000)
+      : 0;
+
+    const canvas = document.getElementById("pattern");
+    const context = canvas.getContext("2d", {alpha: false});
+    const status = document.getElementById("status");
+    const toggle = document.getElementById("toggle");
+    const controls = document.getElementById("controls");
+
+    let running = true;
+    let boardVisible = true;
+    let lastToggleMs = performance.now();
+    let animationRequest = 0;
+    let renderedSquarePx = 0;
+
+    function resizeCanvas() {
+      const cssWidth = window.innerWidth;
+      const cssHeight = window.innerHeight;
+      const deviceScale = window.devicePixelRatio || 1;
+      canvas.width = Math.round(cssWidth * deviceScale);
+      canvas.height = Math.round(cssHeight * deviceScale);
+      context.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
+      draw();
+    }
+
+    function draw() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      const squareRows = innerRows + 1;
+      const squareCols = innerCols + 1;
+
+      context.fillStyle = "rgb(127, 127, 127)";
+      context.fillRect(0, 0, width, height);
+
+      const availableSquarePx = Math.floor(Math.min(
+        (height * 0.88) / squareRows,
+        (width * 0.88) / squareCols
+      ));
+      renderedSquarePx = requestedSquarePx > 0
+        ? Math.min(requestedSquarePx, availableSquarePx)
+        : availableSquarePx;
+
+      const boardWidth = squareCols * renderedSquarePx;
+      const boardHeight = squareRows * renderedSquarePx;
+      const originX = Math.round((width - boardWidth) / 2);
+      const originY = Math.round((height - boardHeight) / 2);
+
+      context.fillStyle = "white";
+      context.fillRect(originX, originY, boardWidth, boardHeight);
+
+      if (boardVisible) {
+        context.fillStyle = "black";
+        for (let row = 0; row < squareRows; ++row) {
+          for (let col = 0; col < squareCols; ++col) {
+            if ((row + col) % 2 === 0) {
+              context.fillRect(
+                originX + col * renderedSquarePx,
+                originY + row * renderedSquarePx,
+                renderedSquarePx,
+                renderedSquarePx
+              );
+            }
+          }
+        }
+      }
+
+      status.textContent =
+        `inner corners: ${innerCols} cols × ${innerRows} rows; ` +
+        `blink: ${blinkHz.toFixed(2)} Hz; square: ${renderedSquarePx}px; ` +
+        `${running ? "running" : "paused"}`;
+    }
+
+    function animate(nowMs) {
+      // One complete on/off cycle is 1/blinkHz. Toggle every half-cycle.
+      const halfPeriodMs = 500 / blinkHz;
+      if (running && nowMs - lastToggleMs >= halfPeriodMs) {
+        const elapsedHalfPeriods = Math.floor(
+          (nowMs - lastToggleMs) / halfPeriodMs
+        );
+        if (elapsedHalfPeriods % 2 === 1) {
+          boardVisible = !boardVisible;
+        }
+        lastToggleMs += elapsedHalfPeriods * halfPeriodMs;
+        draw();
+      }
+      animationRequest = window.requestAnimationFrame(animate);
+    }
+
+    toggle.addEventListener("click", () => {
+      running = !running;
+      toggle.textContent = running ? "Pause" : "Start";
+      if (running) {
+        lastToggleMs = performance.now();
+      } else {
+        boardVisible = true;
+      }
+      draw();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key.toLowerCase() === "h") {
+        controls.classList.toggle("hidden");
+      }
+    });
+
+    window.addEventListener("resize", resizeCanvas);
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) {
+        lastToggleMs = performance.now();
+      }
+    });
+    window.addEventListener("beforeunload", () => {
+      window.cancelAnimationFrame(animationRequest);
+    });
+
+    resizeCanvas();
+    animationRequest = window.requestAnimationFrame(animate);
+    window.setTimeout(() => controls.classList.add("hidden"), 5000);
+  </script>
+</body>
+</html>

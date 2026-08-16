@@ -40,6 +40,9 @@ struct Options {
   double base_z_m{0.05};
   double amplitude_m{0.01};
   double frequency_hz{0.2};
+  double roll_deg{0.0};
+  double pitch_deg{0.0};
+  double yaw_deg{0.0};
   float confidence{1.0F};
   std::string pattern{"static"};
   bool valid{true};
@@ -64,6 +67,9 @@ void print_help(const char* program) {
       << "  --base-z METERS             Base T_TS z (default 0.05)\n"
       << "  --amplitude METERS          Pattern amplitude (default 0.01)\n"
       << "  --frequency HZ              Pattern frequency (default 0.2)\n"
+      << "  --roll-deg DEGREES          Fixed T_TS roll (default 0)\n"
+      << "  --pitch-deg DEGREES         Fixed T_TS pitch (default 0)\n"
+      << "  --yaw-deg DEGREES           Fixed T_TS yaw (default 0)\n"
       << "  --confidence VALUE          Value in [0,1] (default 1)\n"
       << "  --invalid                   Publish valid=false test packets\n"
       << "  --help, -h                  Show this message\n";
@@ -133,6 +139,15 @@ Options parse_options(int argc, char** argv) {
     } else if (argument == "--frequency") {
       options.frequency_hz = parse_double(
           next_value("--frequency"), "--frequency");
+    } else if (argument == "--roll-deg") {
+      options.roll_deg = parse_double(
+          next_value("--roll-deg"), "--roll-deg");
+    } else if (argument == "--pitch-deg") {
+      options.pitch_deg = parse_double(
+          next_value("--pitch-deg"), "--pitch-deg");
+    } else if (argument == "--yaw-deg") {
+      options.yaw_deg = parse_double(
+          next_value("--yaw-deg"), "--yaw-deg");
     } else if (argument == "--confidence") {
       options.confidence = static_cast<float>(parse_double(
           next_value("--confidence"), "--confidence"));
@@ -218,10 +233,22 @@ panda_tracker::TaskPosePacket make_packet(
     std::uint64_t sequence,
     double elapsed_s) {
   panda_tracker::TaskPosePacket packet{};
+  const double roll = options.roll_deg * kPi / 180.0;
+  const double pitch = options.pitch_deg * kPi / 180.0;
+  const double yaw = options.yaw_deg * kPi / 180.0;
+  const double cr = std::cos(roll);
+  const double sr = std::sin(roll);
+  const double cp = std::cos(pitch);
+  const double sp = std::sin(pitch);
+  const double cy = std::cos(yaw);
+  const double sy = std::sin(yaw);
+
   packet.T_TS = {{
-      1.0, 0.0, 0.0, options.base_x_m,
-      0.0, 1.0, 0.0, options.base_y_m,
-      0.0, 0.0, 1.0, options.base_z_m,
+      cy * cp, cy * sp * sr - sy * cr,
+      cy * sp * cr + sy * sr, options.base_x_m,
+      sy * cp, sy * sp * sr + cy * cr,
+      sy * sp * cr - cy * sr, options.base_y_m,
+      -sp, cp * sr, cp * cr, options.base_z_m,
       0.0, 0.0, 0.0, 1.0,
   }};
 
@@ -276,7 +303,9 @@ int main(int argc, char** argv) {
         << "Destination: " << options.destination_ip << ':'
         << options.destination_port << '\n'
         << "Pattern: " << options.pattern << " rate_hz="
-        << options.rate_hz << " duration_s=" << options.duration_s << '\n';
+        << options.rate_hz << " duration_s=" << options.duration_s
+        << " rpy_deg=[" << options.roll_deg << ' '
+        << options.pitch_deg << ' ' << options.yaw_deg << "]\n";
 
     const auto start = Clock::now();
     auto next_send = start;

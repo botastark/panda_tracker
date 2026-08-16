@@ -1,3 +1,4 @@
+#include "panda_tracker/pbvs.h"
 #include "panda_tracker/task_pose_protocol.h"
 
 #include <franka/exception.h>
@@ -44,10 +45,13 @@ struct Options {
   std::string tracker_source_ip{};
   std::uint16_t tracker_port{6501};
   double sample_rate_hz{20.0};
+  bool sample_rate_explicit{false};
   double duration_s{30.0};
   double tracker_timeout_s{0.1};
+  bool tracker_timeout_explicit{false};
   float minimum_confidence{0.5F};
   std::string csv_path{};
+  std::string pbvs_config_path{};
 };
 
 void print_help(const char* program) {
@@ -70,6 +74,7 @@ void print_help(const char* program) {
       << "  --minimum-confidence VALUE Accepted range [0,1] "
          "(default 0.5)\n"
       << "  --csv PATH                 Write measurements to CSV\n"
+      << "  --pbvs-config PATH         Enable compute-only PBVS logging\n"
       << "  --help, -h                 Show this message\n";
 }
 
@@ -115,17 +120,21 @@ Options parse_options(int argc, char** argv) {
     } else if (argument == "--sample-rate") {
       options.sample_rate_hz =
           parse_double(next_value("--sample-rate"), "--sample-rate");
+      options.sample_rate_explicit = true;
     } else if (argument == "--duration") {
       options.duration_s =
           parse_double(next_value("--duration"), "--duration");
     } else if (argument == "--tracker-timeout") {
       options.tracker_timeout_s = parse_double(
           next_value("--tracker-timeout"), "--tracker-timeout");
+      options.tracker_timeout_explicit = true;
     } else if (argument == "--minimum-confidence") {
       options.minimum_confidence = static_cast<float>(parse_double(
           next_value("--minimum-confidence"), "--minimum-confidence"));
     } else if (argument == "--csv") {
       options.csv_path = next_value("--csv");
+    } else if (argument == "--pbvs-config") {
+      options.pbvs_config_path = next_value("--pbvs-config");
     } else if (argument == "--help" || argument == "-h") {
       print_help(argv[0]);
       std::exit(EXIT_SUCCESS);
@@ -398,7 +407,8 @@ TrackerHealth tracker_health(
 
 class CsvLogger {
  public:
-  explicit CsvLogger(const std::string& path) {
+  CsvLogger(const std::string& path, bool log_pbvs)
+      : log_pbvs_(log_pbvs) {
     if (path.empty()) {
       return;
     }
@@ -415,6 +425,23 @@ class CsvLogger {
     for (std::size_t index = 0; index < 16; ++index) {
       stream_ << ",T_TS_" << index;
     }
+    if (log_pbvs_) {
+      stream_
+          << ",pbvs_state,pbvs_reason"
+          << ",p_error_base_x_m,p_error_base_y_m,p_error_base_z_m"
+          << ",p_error_norm_m"
+          << ",r_error_body_x_rad,r_error_body_y_rad,r_error_body_z_rad"
+          << ",r_error_norm_rad"
+          << ",proposed_v_base_x_mps,proposed_v_base_y_mps,"
+             "proposed_v_base_z_mps"
+          << ",proposed_w_body_x_radps,proposed_w_body_y_radps,"
+             "proposed_w_body_z_radps"
+          << ",target_linear_speed_mps,target_angular_speed_radps"
+          << ",proposed_linear_speed_mps,proposed_angular_speed_radps"
+          << ",proposed_command_lead_m"
+          << ",proposed_O_T_EE_x_m,proposed_O_T_EE_y_m,"
+             "proposed_O_T_EE_z_m";
+    }
     stream_ << '\n';
     stream_ << std::setprecision(12);
   }
@@ -425,7 +452,8 @@ class CsvLogger {
       double robot_age_s,
       const TrackerSnapshot& tracker,
       double tracker_age_s,
-      TrackerHealth health) {
+      TrackerHealth health,
+      const std::optional<panda_tracker::PbvsResult>& pbvs_result) {
     if (!stream_) {
       return;
     }
@@ -457,28 +485,107 @@ class CsvLogger {
         stream_ << ',';
       }
     }
+
+    if (log_pbvs_) {
+      if (pbvs_result) {
+        const auto& result = *pbvs_result;
+        stream_ << ',' << panda_tracker::pbvs_state_text(result.state)
+                << ',' << result.reason;
+        for (const double value : result.position_error_base_m) {
+          stream_ << ',' << value;
+        }
+        stream_ << ',' << result.position_error_norm_m;
+        for (const double value : result.orientation_error_body_rad) {
+          stream_ << ',' << value;
+        }
+        stream_ << ',' << result.orientation_error_norm_rad;
+        for (const double value :
+             result.proposed_linear_velocity_base_mps) {
+          stream_ << ',' << value;
+        }
+        for (const double value :
+             result.proposed_angular_velocity_body_radps) {
+          stream_ << ',' << value;
+        }
+        stream_ << ',' << result.target_linear_speed_mps
+                << ',' << result.target_angular_speed_radps
+                << ',' << result.proposed_linear_speed_mps
+                << ',' << result.proposed_angular_speed_radps
+                << ',' << result.proposed_command_lead_m;
+        if (result.has_proposed_pose) {
+          const auto translation =
+              panda_tracker::transform_translation(result.proposed_T_BE);
+          for (const double value : translation) {
+            stream_ << ',' << value;
+          }
+        } else {
+          stream_ << ",,,";
+        }
+      } else {
+        for (std::size_t index = 0; index < 24; ++index) {
+          stream_ << ',';
+        }
+      }
+    }
     stream_ << '\n';
   }
 
  private:
   std::ofstream stream_;
+  bool log_pbvs_{false};
 };
 
 }  // namespace
 
 int main(int argc, char** argv) {
   try {
-    const Options options = parse_options(argc, argv);
+    Options options = parse_options(argc, argv);
+
+    std::optional<panda_tracker::PbvsConfig> pbvs_config;
+    std::optional<panda_tracker::PbvsController> pbvs_controller;
+    if (!options.pbvs_config_path.empty()) {
+      panda_tracker::PbvsConfig loaded{};
+      std::string config_error;
+      if (!panda_tracker::load_pbvs_config(
+              options.pbvs_config_path, loaded, config_error)) {
+        throw std::runtime_error("Unable to load PBVS config: " + config_error);
+      }
+      if (options.sample_rate_explicit &&
+          std::abs(options.sample_rate_hz - loaded.control_rate_hz) > 1e-9) {
+        throw std::invalid_argument(
+            "--sample-rate must match control_rate_hz in --pbvs-config.");
+      }
+      if (options.tracker_timeout_explicit &&
+          std::abs(options.tracker_timeout_s - loaded.tracker_timeout) > 1e-9) {
+        throw std::invalid_argument(
+            "--tracker-timeout must match tracker_timeout in --pbvs-config.");
+      }
+      options.sample_rate_hz = loaded.control_rate_hz;
+      options.tracker_timeout_s = loaded.tracker_timeout;
+      pbvs_config = loaded;
+      pbvs_controller.emplace(loaded);
+    }
 
     std::signal(SIGINT, request_stop);
     std::signal(SIGTERM, request_stop);
 
     std::cout
-        << "READ-ONLY HARDWARE OBSERVER\n"
+        << (pbvs_controller
+                ? "READ-ONLY PBVS COMPUTE OBSERVER\n"
+                : "READ-ONLY HARDWARE OBSERVER\n")
         << "No robot control mode is started. No motion command can be sent.\n"
         << "Robot: " << options.robot_ip << '\n'
         << "PTP2: " << options.tracker_bind_ip << ':'
         << options.tracker_port << '\n';
+    if (pbvs_config) {
+      std::cout
+          << "PBVS config: " << options.pbvs_config_path << '\n'
+          << "PBVS rate_hz: " << pbvs_config->control_rate_hz << '\n'
+          << "Tool geometry status: "
+          << pbvs_config->tool_geometry_status << '\n'
+          << "COMPUTE ONLY: proposed poses and velocities are logged but "
+             "never sent.\n";
+    }
     if (!options.tracker_source_ip.empty()) {
       std::cout << "Accepted tracker source: "
                 << options.tracker_source_ip << '\n';
@@ -491,7 +598,7 @@ int main(int argc, char** argv) {
     }
 
     TrackerReceiver tracker_receiver(options);
-    CsvLogger csv(options.csv_path);
+    CsvLogger csv(options.csv_path, pbvs_controller.has_value());
     SharedRobotState robot_state;
 
     std::atomic_bool reader_running{true};
@@ -520,9 +627,12 @@ int main(int argc, char** argv) {
     auto next_console = start;
     const auto sample_period = std::chrono::duration<double>(
         1.0 / options.sample_rate_hz);
+    auto last_pbvs_sample = start -
+        std::chrono::duration_cast<Clock::duration>(sample_period);
 
     bool observed_robot_state = false;
     bool observed_valid_tracker = false;
+    bool observed_pbvs_tracking = false;
 
     while (reader_running.load(std::memory_order_relaxed) &&
            stop_requested == 0) {
@@ -547,6 +657,44 @@ int main(int argc, char** argv) {
         const TrackerHealth health =
             tracker_health(tracker, sample_time, options);
 
+        std::optional<panda_tracker::PbvsResult> pbvs_result;
+        if (pbvs_controller) {
+          std::optional<panda_tracker::Transform> T_BE;
+          if (robot.available) {
+            T_BE = panda_tracker::franka_column_major_transform(
+                robot.O_T_EE);
+          }
+
+          std::optional<panda_tracker::TaskPoseMeasurement> measurement;
+          if (tracker.available) {
+            panda_tracker::TaskPoseMeasurement converted{};
+            converted.T_TS = tracker.packet.T_TS;
+            converted.timestamp_s = std::chrono::duration<double>(
+                tracker.arrival.time_since_epoch()).count();
+            converted.valid = tracker.packet.valid &&
+                              tracker.packet.confidence >=
+                                  options.minimum_confidence;
+            converted.sequence_id = tracker.packet.sequence_id;
+            measurement = converted;
+          }
+
+          const double now_s = std::chrono::duration<double>(
+              sample_time.time_since_epoch()).count();
+          double dt_s = seconds_between(sample_time, last_pbvs_sample);
+          if (!(dt_s > 0.0) || !std::isfinite(dt_s)) {
+            dt_s = 1.0 / options.sample_rate_hz;
+          }
+          last_pbvs_sample = sample_time;
+          pbvs_result = pbvs_controller->step(
+              T_BE,
+              robot_age_s,
+              measurement,
+              now_s,
+              dt_s);
+          observed_pbvs_tracking = observed_pbvs_tracking ||
+              pbvs_result->state == panda_tracker::PbvsState::kTracking;
+        }
+
         observed_robot_state = observed_robot_state || robot.available;
         observed_valid_tracker = observed_valid_tracker ||
                                  health == TrackerHealth::kValid;
@@ -557,7 +705,8 @@ int main(int argc, char** argv) {
             robot_age_s,
             tracker,
             tracker_age_s,
-            health);
+            health,
+            pbvs_result);
 
         if (sample_time >= next_console) {
           std::cout << std::fixed << std::setprecision(4);
@@ -585,6 +734,23 @@ int main(int argc, char** argv) {
                 << tracker.packet.T_TS[3] << ' '
                 << tracker.packet.T_TS[7] << ' '
                 << tracker.packet.T_TS[11] << ']';
+          }
+          if (pbvs_result) {
+            constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+            std::cout
+                << " | pbvs="
+                << panda_tracker::pbvs_state_text(pbvs_result->state)
+                << " p_err_mm="
+                << pbvs_result->position_error_norm_m * 1000.0
+                << " r_err_deg="
+                << pbvs_result->orientation_error_norm_rad * kRadToDeg
+                << " proposed_v_mps="
+                << pbvs_result->proposed_linear_speed_mps
+                << " proposed_w_degps="
+                << pbvs_result->proposed_angular_speed_radps * kRadToDeg;
+            if (!pbvs_result->reason.empty()) {
+              std::cout << " reason=" << pbvs_result->reason;
+            }
           }
           std::cout << '\n';
           next_console = sample_time + std::chrono::seconds(1);
@@ -630,8 +796,17 @@ int main(int argc, char** argv) {
       std::cerr << "FAIL: no fresh, valid PTP2 tracker pose was observed.\n";
       return EXIT_FAILURE;
     }
+    if (pbvs_controller && !observed_pbvs_tracking) {
+      std::cerr << "FAIL: compute-only PBVS never entered TRACKING.\n";
+      return EXIT_FAILURE;
+    }
 
-    std::cout << "PASS: Panda state and fresh PTP2 tracker data observed.\n";
+    if (pbvs_controller) {
+      std::cout
+          << "PASS: compute-only PBVS entered TRACKING; no command was sent.\n";
+    } else {
+      std::cout << "PASS: Panda state and fresh PTP2 tracker data observed.\n";
+    }
     return EXIT_SUCCESS;
   } catch (const franka::NetworkException& exception) {
     std::cerr << "Franka network error: " << exception.what() << '\n';

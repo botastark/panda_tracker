@@ -35,3 +35,4 @@ build/
 
 .venv/
 proyecto_TFM
+build*/
