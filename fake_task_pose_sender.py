@@ -97,24 +97,6 @@ def parse_args():
         help="pattern frequency in Hz (default: 0.2)",
     )
     parser.add_argument(
-        "--roll-deg",
-        type=float,
-        default=0.0,
-        help="fixed T_TS roll in degrees (default: 0)",
-    )
-    parser.add_argument(
-        "--pitch-deg",
-        type=float,
-        default=0.0,
-        help="fixed T_TS pitch in degrees (default: 0)",
-    )
-    parser.add_argument(
-        "--yaw-deg",
-        type=float,
-        default=0.0,
-        help="fixed T_TS yaw in degrees (default: 0)",
-    )
-    parser.add_argument(
         "--confidence",
         type=float,
         default=1.0,
@@ -149,9 +131,6 @@ def parse_args():
         "base_z",
         "amplitude",
         "frequency",
-        "roll_deg",
-        "pitch_deg",
-        "yaw_deg",
         "confidence",
     ):
         finite_number(getattr(args, option), f"--{option.replace('_', '-')}", parser)
@@ -176,13 +155,6 @@ def transform_for(args, elapsed):
     z = args.base_z
     phase = 2.0 * math.pi * args.frequency * elapsed
 
-    roll = math.radians(args.roll_deg)
-    pitch = math.radians(args.pitch_deg)
-    yaw = math.radians(args.yaw_deg)
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-
     if args.pattern == "sine-x":
         x += args.amplitude * math.sin(phase)
     elif args.pattern == "sine-y":
@@ -194,11 +166,9 @@ def transform_for(args, elapsed):
         y += args.amplitude * math.sin(phase)
 
     return (
-        cy * cp, cy * sp * sr - sy * cr,
-        cy * sp * cr + sy * sr, x,
-        sy * cp, sy * sp * sr + cy * cr,
-        sy * sp * cr - cy * sr, y,
-        -sp, cp * sr, cp * cr, z,
+        1.0, 0.0, 0.0, x,
+        0.0, 1.0, 0.0, y,
+        0.0, 0.0, 1.0, z,
         0.0, 0.0, 0.0, 1.0,
     )
 
@@ -219,8 +189,7 @@ def run(args):
     print(f"Destination: {args.destination_ip}:{args.destination_port}")
     print(
         f"Pattern: {args.pattern} rate_hz={args.rate:g} "
-        f"duration_s={args.duration:g} rpy_deg=[{args.roll_deg:g} "
-        f"{args.pitch_deg:g} {args.yaw_deg:g}]"
+        f"duration_s={args.duration:g}"
     )
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as udp_socket:
