@@ -1,65 +1,68 @@
-# Low-latency CLOSED-LOOP first test.
-# Motion still requires BOTH motion_enabled:true and --enable-motion.
-
+# Conservative first real-robot PBVS test.
+# Motion requires this file AND the --enable-motion command-line flag.
 motion_enabled: true
 require_tracker_source_filter: true
 stop_on_tracking_loss: true
+stop_on_robot_contact: true
 
-# Axis mask. Translation = Panda base axes. Rotation = flange/body axes.
-# FIRST TEST: X ONLY.
-control_x: true
-control_y: false
-control_z: false
-control_rx: false
-control_ry: false
-control_rz: false
-
+# Timing: arming and actual motion use separate clocks.
 max_arm_wait_s: 15.0
-max_runtime_s: 5.0
+max_motion_runtime_s: 5.0
+max_stop_time_s: 1.0
 
-# Start very slowly.
-hard_max_linear_speed_mps: 0.002
-hard_max_angular_speed_degps: 1.0
-hard_max_command_lead_m: 0.001
-hard_max_angular_command_lead_deg: 1.0
+# X-only Cartesian velocity trajectory.
+# The application calls libfranka's velocity/acceleration/jerk limiter and
+# robot.control() enables libfranka rate limiting again as a final layer.
+max_linear_speed_mps: 0.002
+max_linear_acceleration_mps2: 0.010
+max_linear_jerk_mps3: 0.100
+max_command_lead_m: 0.001
+max_active_x_error_m: 0.080
 
-# These limits apply only to ENABLED command axes.
-hard_max_active_position_error_m: 0.080
-hard_max_active_orientation_error_deg: 10.0
+# Begin braking 1 mm before the 10 mm hard X envelope.
+# At 2 mm/s and 10 mm/s^2, v^2/(2a) is only 0.2 mm.
+envelope_braking_margin_m: 0.001
+stop_velocity_epsilon_mps: 0.00002
+stop_acceleration_epsilon_mps2: 0.0005
 
 hard_max_tracker_age_s: 0.150
-max_command_age_s: 0.05
+max_command_age_s: 0.050
 
-# Stability history is a quality gate only; it does NOT buffer the control path.
 quality_window_samples: 12
 quality_min_samples: 10
-
-# Low-latency EMA. 1.0 = no smoothing.
 tracker_ema_alpha_position: 0.70
-tracker_ema_alpha_orientation: 0.70
+tracker_max_position_jump_m: 0.050
 
-# Reject physically implausible new T_TS packets before filtering.
-tracker_max_position_jump_m: 0.15
-tracker_max_angle_jump_deg: 180
+max_task_std_x_m: 0.005
+max_task_std_y_m: 0.010
+max_task_std_z_m: 0.020
+max_task_std_roll_deg: 10.0
+max_task_std_pitch_deg: 10.0
+max_task_std_yaw_deg: 5.0
 
-# Raw T_TS stationary spread required for arming.
-# Based conservatively on the measured stationary tracker noise.
-max_task_std_x_m: 0.15
-max_task_std_y_m: 0.15
-max_task_std_z_m: 0.50
-max_task_std_roll_deg: 35.0
-max_task_std_pitch_deg: 35.0
-max_task_std_yaw_deg: 8.0
-
-# Independent physical-flange envelope from control-loop startup.
-# X-only test: only X gets meaningful travel.
+# Physical flange envelope measured from the first control-loop sample.
 max_travel_x_m: 0.010
 max_travel_y_m: 0.002
 max_travel_z_m: 0.002
 max_rotation_travel_deg: 2.0
 
-# PBVS must be safe for 20 consecutive 100 Hz cycles before motion begins.
-arm_tracking_cycles: 10
+# Independent measured joint-motion gates.
+max_start_joint_speed_radps: 0.050
+max_running_joint_speed_radps: 0.500
 
-min_control_command_success_rate: 0.9
-communication_grace_s: 2.0
+# Additional software torque gates. These do not replace Franka's reflexes.
+# Verify these values against the installed end effector, payload, and the
+# normal stationary readings of your particular robot before enabling motion.
+max_abs_joint_torque_nm: [80, 80, 80, 80, 11, 11, 11]
+max_abs_external_joint_torque_nm: [8, 8, 8, 8, 5, 5, 5]
+max_abs_joint_torque_rate_nmps: [800, 800, 800, 800, 300, 300, 300]
+max_external_force_n: 15.0
+max_external_torque_nm: 3.0
+# Linearly reduce speed above 80% of any configured torque/wrench limit.
+torque_speed_derate_ratio: 0.80
+torque_monitor_grace_s: 0.50
+torque_violation_cycles: 5
+
+arm_tracking_cycles: 10
+min_control_command_success_rate: 0.95
+communication_grace_s: 0.50
