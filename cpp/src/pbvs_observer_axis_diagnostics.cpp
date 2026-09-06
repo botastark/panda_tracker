@@ -364,6 +364,106 @@ double seconds_between(Clock::time_point later, Clock::time_point earlier) {
   return std::chrono::duration<double>(later - earlier).count();
 }
 
+std::array<double, 6> pose_from_row_major_transform(
+    const panda_tracker::Transform& T) {
+  return {{
+      T[3], T[7], T[11],
+      std::atan2(T[9], T[10]),
+      std::atan2(-T[8], std::hypot(T[0], T[4])),
+      std::atan2(T[4], T[0]),
+  }};
+}
+
+
+constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+
+const panda_tracker::Transform& diagnostic_T_CS() {
+  // Camera-to-stick calibration. Robot side only.
+  static const panda_tracker::Transform value = {{
+      1.0, 0.0, 0.0, -0.040,
+      0.0, 1.0, 0.0,  0.000,
+      0.0, 0.0, 1.0,  0.183,
+      0.0, 0.0, 0.0,  1.000,
+  }};
+  return value;
+}
+
+const panda_tracker::Transform& diagnostic_T_TS_des() {
+  // Desired stick pose in target: aligned orientation, +50 mm in target Z.
+  static const panda_tracker::Transform value = {{
+      1.0, 0.0, 0.0, 0.000,
+      0.0, 1.0, 0.0, 0.000,
+      0.0, 0.0, 1.0, 0.050,
+      0.0, 0.0, 0.0, 1.000,
+  }};
+  return value;
+}
+
+std::array<double, 3> rotation_error_deg(
+    const panda_tracker::Transform& current,
+    const panda_tracker::Transform& desired) {
+  // Public PBVS API only:
+  // delta = current^{-1} * desired
+  // R_delta = R_current^T * R_desired
+  const auto delta = panda_tracker::multiply_transform(
+      panda_tracker::invert_transform(current), desired);
+  const auto rotvec = panda_tracker::so3_log(
+      panda_tracker::transform_rotation(delta));
+  return {{
+      rotvec[0] * kRadToDeg,
+      rotvec[1] * kRadToDeg,
+      rotvec[2] * kRadToDeg,
+  }};
+}
+
+struct AxisDiagnostics {
+  panda_tracker::Transform T_CT{};
+  panda_tracker::Transform T_TC{};
+  panda_tracker::Transform T_TS{};
+  std::array<double, 6> pose_CT{};
+  std::array<double, 6> pose_TC{};
+  std::array<double, 6> pose_TS{};
+  std::array<double, 3> task_error_T_m{};
+  double task_error_T_norm_m{0.0};
+  std::array<double, 3> task_error_R_deg{};
+  double task_error_R_norm_deg{0.0};
+};
+
+AxisDiagnostics make_axis_diagnostics(
+    const panda_tracker::Transform& T_CT) {
+  AxisDiagnostics d{};
+  d.T_CT = T_CT;
+  d.T_TC = panda_tracker::invert_transform(T_CT);
+  d.T_TS = panda_tracker::multiply_transform(d.T_TC, diagnostic_T_CS());
+
+  d.pose_CT = pose_from_row_major_transform(d.T_CT);
+  d.pose_TC = pose_from_row_major_transform(d.T_TC);
+  d.pose_TS = pose_from_row_major_transform(d.T_TS);
+
+  const auto p_TS = panda_tracker::transform_translation(d.T_TS);
+  const auto p_des =
+      panda_tracker::transform_translation(diagnostic_T_TS_des());
+
+  d.task_error_T_m = {{
+      p_des[0] - p_TS[0],
+      p_des[1] - p_TS[1],
+      p_des[2] - p_TS[2],
+  }};
+  d.task_error_T_norm_m = std::sqrt(
+      d.task_error_T_m[0] * d.task_error_T_m[0] +
+      d.task_error_T_m[1] * d.task_error_T_m[1] +
+      d.task_error_T_m[2] * d.task_error_T_m[2]);
+
+  d.task_error_R_deg =
+      rotation_error_deg(d.T_TS, diagnostic_T_TS_des());
+  d.task_error_R_norm_deg = std::sqrt(
+      d.task_error_R_deg[0] * d.task_error_R_deg[0] +
+      d.task_error_R_deg[1] * d.task_error_R_deg[1] +
+      d.task_error_R_deg[2] * d.task_error_R_deg[2]);
+
+  return d;
+}
+
 enum class TrackerHealth {
   kMissing,
   kStale,
@@ -418,32 +518,56 @@ class CsvLogger {
     if (!stream_) {
       throw std::runtime_error("Unable to open CSV: " + path);
     }
+
     stream_
-        << "elapsed_s,robot_sequence,robot_age_s,"
-        << "O_T_F_x_m,O_T_F_y_m,O_T_F_z_m,"
-        << "O_T_F_roll_rad,O_T_F_pitch_rad,O_T_F_yaw_rad,"
-        << "tracker_health,tracker_age_s,tracker_sequence,"
-        << "tracker_confidence,tracker_valid,tracker_source";
+        << "elapsed_s"
+        << ",robot_sequence,robot_age_s"
+        << ",O_T_F_x_m,O_T_F_y_m,O_T_F_z_m"
+        << ",O_T_F_roll_deg,O_T_F_pitch_deg,O_T_F_yaw_deg"
+        << ",tracker_health,tracker_age_s,tracker_sequence"
+        << ",tracker_confidence,tracker_valid,tracker_source"
+        << ",tracker_sequence_changed"
+
+        // Raw pose received over PTP2: T_CT.
+        << ",raw_CT_x_m,raw_CT_y_m,raw_CT_z_m"
+        << ",raw_CT_roll_deg,raw_CT_pitch_deg,raw_CT_yaw_deg";
+
     for (std::size_t index = 0; index < 16; ++index) {
-      stream_ << ",T_CT_" << index;
+      stream_ << ",raw_T_CT_" << index;
     }
+
+    stream_
+        // Exactly one inversion, before stick geometry.
+        << ",inv_TC_x_m,inv_TC_y_m,inv_TC_z_m"
+        << ",inv_TC_roll_deg,inv_TC_pitch_deg,inv_TC_yaw_deg"
+
+        // Stick pose reconstructed on robot side.
+        << ",stick_TS_x_m,stick_TS_y_m,stick_TS_z_m"
+        << ",stick_TS_roll_deg,stick_TS_pitch_deg,stick_TS_yaw_deg"
+
+        // Direct target-frame task errors.
+        << ",task_err_T_x_mm,task_err_T_y_mm,task_err_T_z_mm"
+        << ",task_err_T_norm_mm"
+        << ",task_err_R_x_deg,task_err_R_y_deg,task_err_R_z_deg"
+        << ",task_err_R_norm_deg";
+
     if (log_pbvs_) {
       stream_
           << ",pbvs_state,pbvs_reason"
-          << ",p_error_base_x_m,p_error_base_y_m,p_error_base_z_m"
-          << ",p_error_norm_m"
-          << ",r_error_body_x_rad,r_error_body_y_rad,r_error_body_z_rad"
-          << ",r_error_norm_rad"
-          << ",proposed_v_base_x_mps,proposed_v_base_y_mps,"
-             "proposed_v_base_z_mps"
-          << ",proposed_w_body_x_radps,proposed_w_body_y_radps,"
-             "proposed_w_body_z_radps"
-          << ",target_linear_speed_mps,target_angular_speed_radps"
-          << ",proposed_linear_speed_mps,proposed_angular_speed_radps"
-          << ",proposed_command_lead_m"
-          << ",proposed_O_T_F_x_m,proposed_O_T_F_y_m,"
-             "proposed_O_T_EE_z_m";
+          << ",pbvs_p_err_B_x_mm,pbvs_p_err_B_y_mm,pbvs_p_err_B_z_mm"
+          << ",pbvs_p_err_B_norm_mm"
+          << ",pbvs_r_err_body_x_deg,pbvs_r_err_body_y_deg,"
+             "pbvs_r_err_body_z_deg"
+          << ",pbvs_r_err_body_norm_deg"
+          << ",pbvs_v_B_x_mps,pbvs_v_B_y_mps,pbvs_v_B_z_mps"
+          << ",pbvs_w_body_x_degps,pbvs_w_body_y_degps,"
+             "pbvs_w_body_z_degps"
+          << ",pbvs_proposed_v_norm_mps,pbvs_proposed_w_norm_degps"
+          << ",pbvs_target_linear_speed_mps,"
+             "pbvs_target_angular_speed_degps"
+          << ",pbvs_command_lead_m";
     }
+
     stream_ << '\n';
     stream_ << std::setprecision(12);
   }
@@ -460,81 +584,133 @@ class CsvLogger {
       return;
     }
 
-    stream_ << elapsed_s << ',';
-    if (robot.available) {
-      const auto pose = pose_from_franka_transform(robot.O_T_EE);
-      stream_ << robot.sequence << ',' << robot_age_s;
-      for (const double value : pose) {
-        stream_ << ',' << value;
-      }
-    } else {
-      stream_ << ",,,,,,,";
-    }
+    stream_ << elapsed_s;
 
-    stream_ << ',' << tracker_health_text(health) << ',';
-    if (tracker.available) {
-      stream_ << tracker_age_s << ','
-              << tracker.packet.sequence_id << ','
-              << tracker.packet.confidence << ','
-              << (tracker.packet.valid ? 1 : 0) << ','
-              << tracker.source_ip << ':' << tracker.source_port;
-      for (const double value : tracker.packet.T_TS) {
-        stream_ << ',' << value;
-      }
+    // Physical Panda flange F in base O/B.
+    if (robot.available) {
+      const auto O_T_EE = panda_tracker::franka_column_major_transform(
+          robot.O_T_EE);
+      const auto F_T_EE = panda_tracker::franka_column_major_transform(
+          robot.F_T_EE);
+      const auto O_T_F = panda_tracker::multiply_transform(
+          O_T_EE, panda_tracker::invert_transform(F_T_EE));
+      const auto pose_F = pose_from_row_major_transform(O_T_F);
+
+      stream_ << ',' << robot.sequence
+              << ',' << robot_age_s
+              << ',' << pose_F[0]
+              << ',' << pose_F[1]
+              << ',' << pose_F[2]
+              << ',' << pose_F[3] * kRadToDeg
+              << ',' << pose_F[4] * kRadToDeg
+              << ',' << pose_F[5] * kRadToDeg;
     } else {
-      stream_ << ",,,,";
-      for (std::size_t index = 0; index < 16; ++index) {
+      for (int i = 0; i < 8; ++i) {
         stream_ << ',';
       }
     }
 
+    stream_ << ',' << tracker_health_text(health);
+
+    bool sequence_changed = false;
+    if (tracker.available) {
+      sequence_changed =
+          !last_tracker_sequence_ ||
+          *last_tracker_sequence_ != tracker.packet.sequence_id;
+
+      stream_ << ',' << tracker_age_s
+              << ',' << tracker.packet.sequence_id
+              << ',' << tracker.packet.confidence
+              << ',' << (tracker.packet.valid ? 1 : 0)
+              << ',' << tracker.source_ip << ':' << tracker.source_port
+              << ',' << (sequence_changed ? 1 : 0);
+
+      const AxisDiagnostics d =
+          make_axis_diagnostics(tracker.packet.T_TS);
+
+      stream_ << ',' << d.pose_CT[0]
+              << ',' << d.pose_CT[1]
+              << ',' << d.pose_CT[2]
+              << ',' << d.pose_CT[3] * kRadToDeg
+              << ',' << d.pose_CT[4] * kRadToDeg
+              << ',' << d.pose_CT[5] * kRadToDeg;
+
+      for (const double value : d.T_CT) {
+        stream_ << ',' << value;
+      }
+
+      stream_ << ',' << d.pose_TC[0]
+              << ',' << d.pose_TC[1]
+              << ',' << d.pose_TC[2]
+              << ',' << d.pose_TC[3] * kRadToDeg
+              << ',' << d.pose_TC[4] * kRadToDeg
+              << ',' << d.pose_TC[5] * kRadToDeg
+
+              << ',' << d.pose_TS[0]
+              << ',' << d.pose_TS[1]
+              << ',' << d.pose_TS[2]
+              << ',' << d.pose_TS[3] * kRadToDeg
+              << ',' << d.pose_TS[4] * kRadToDeg
+              << ',' << d.pose_TS[5] * kRadToDeg
+
+              << ',' << d.task_error_T_m[0] * 1000.0
+              << ',' << d.task_error_T_m[1] * 1000.0
+              << ',' << d.task_error_T_m[2] * 1000.0
+              << ',' << d.task_error_T_norm_m * 1000.0
+
+              << ',' << d.task_error_R_deg[0]
+              << ',' << d.task_error_R_deg[1]
+              << ',' << d.task_error_R_deg[2]
+              << ',' << d.task_error_R_norm_deg;
+
+      last_tracker_sequence_ = tracker.packet.sequence_id;
+    } else {
+      // tracker age, sequence, confidence, valid, source, sequence_changed
+      for (int i = 0; i < 6; ++i) stream_ << ',';
+      // raw pose 6 + matrix 16 + inverse pose 6 + stick pose 6
+      // + task translation 4 + task orientation 4 = 42
+      for (int i = 0; i < 42; ++i) stream_ << ',';
+    }
+
     if (log_pbvs_) {
       if (pbvs_result) {
-        const auto& result = *pbvs_result;
-        stream_ << ',' << panda_tracker::pbvs_state_text(result.state)
-                << ',' << result.reason;
-        for (const double value : result.position_error_base_m) {
-          stream_ << ',' << value;
-        }
-        stream_ << ',' << result.position_error_norm_m;
-        for (const double value : result.orientation_error_body_rad) {
-          stream_ << ',' << value;
-        }
-        stream_ << ',' << result.orientation_error_norm_rad;
-        for (const double value :
-             result.proposed_linear_velocity_base_mps) {
-          stream_ << ',' << value;
-        }
-        for (const double value :
-             result.proposed_angular_velocity_body_radps) {
-          stream_ << ',' << value;
-        }
-        stream_ << ',' << result.target_linear_speed_mps
-                << ',' << result.target_angular_speed_radps
-                << ',' << result.proposed_linear_speed_mps
-                << ',' << result.proposed_angular_speed_radps
-                << ',' << result.proposed_command_lead_m;
-        if (result.has_proposed_pose) {
-          const auto translation =
-              panda_tracker::transform_translation(result.proposed_T_BE);
-          for (const double value : translation) {
-            stream_ << ',' << value;
-          }
-        } else {
-          stream_ << ",,,";
-        }
+        const auto& r = *pbvs_result;
+        stream_ << ',' << panda_tracker::pbvs_state_text(r.state)
+                << ',' << r.reason
+                << ',' << r.position_error_base_m[0] * 1000.0
+                << ',' << r.position_error_base_m[1] * 1000.0
+                << ',' << r.position_error_base_m[2] * 1000.0
+                << ',' << r.position_error_norm_m * 1000.0
+                << ',' << r.orientation_error_body_rad[0] * kRadToDeg
+                << ',' << r.orientation_error_body_rad[1] * kRadToDeg
+                << ',' << r.orientation_error_body_rad[2] * kRadToDeg
+                << ',' << r.orientation_error_norm_rad * kRadToDeg
+                << ',' << r.proposed_linear_velocity_base_mps[0]
+                << ',' << r.proposed_linear_velocity_base_mps[1]
+                << ',' << r.proposed_linear_velocity_base_mps[2]
+                << ',' << r.proposed_angular_velocity_body_radps[0] *
+                             kRadToDeg
+                << ',' << r.proposed_angular_velocity_body_radps[1] *
+                             kRadToDeg
+                << ',' << r.proposed_angular_velocity_body_radps[2] *
+                             kRadToDeg
+                << ',' << r.proposed_linear_speed_mps
+                << ',' << r.proposed_angular_speed_radps * kRadToDeg
+                << ',' << r.target_linear_speed_mps
+                << ',' << r.target_angular_speed_radps * kRadToDeg
+                << ',' << r.proposed_command_lead_m;
       } else {
-        for (std::size_t index = 0; index < 24; ++index) {
-          stream_ << ',';
-        }
+        for (int i = 0; i < 21; ++i) stream_ << ',';
       }
     }
+
     stream_ << '\n';
   }
 
  private:
   std::ofstream stream_;
   bool log_pbvs_{false};
+  std::optional<std::uint64_t> last_tracker_sequence_;
 };
 
 }  // namespace
@@ -585,6 +761,8 @@ int main(int argc, char** argv) {
           << "PBVS rate_hz: " << pbvs_config->control_rate_hz << '\n'
           << "Tool geometry status: "
           << pbvs_config->tool_geometry_status << '\n'
+          << "Observer task: AXIS-BY-AXIS TRANSLATION + ORIENTATION + CSV\n"
+          << "Desired aligned orientation: identity (0 deg), NOT 180 deg\n"
           << "COMPUTE ONLY: proposed poses and velocities are logged but "
              "never sent.\n";
     }
@@ -748,28 +926,76 @@ int main(int argc, char** argv) {
 
           std::cout << " | tracker=" << tracker_health_text(health);
           if (tracker.available) {
+            const AxisDiagnostics d =
+                make_axis_diagnostics(tracker.packet.T_TS);
+
             std::cout
                 << " seq=" << tracker.packet.sequence_id
                 << " confidence=" << tracker.packet.confidence
                 << " age_ms=" << tracker_age_s * 1000.0
-                << " p_CT_m=["
-                << tracker.packet.T_TS[3] << ' '
-                << tracker.packet.T_TS[7] << ' '
-                << tracker.packet.T_TS[11] << ']';
+
+                << " | RAW_CT p_m=["
+                << d.pose_CT[0] << ' ' << d.pose_CT[1] << ' '
+                << d.pose_CT[2] << "] rpy_deg=["
+                << d.pose_CT[3] * kRadToDeg << ' '
+                << d.pose_CT[4] * kRadToDeg << ' '
+                << d.pose_CT[5] * kRadToDeg << ']'
+
+                << " | INV_TC p_m=["
+                << d.pose_TC[0] << ' ' << d.pose_TC[1] << ' '
+                << d.pose_TC[2] << "] rpy_deg=["
+                << d.pose_TC[3] * kRadToDeg << ' '
+                << d.pose_TC[4] * kRadToDeg << ' '
+                << d.pose_TC[5] * kRadToDeg << ']'
+
+                << " | STICK_TS p_m=["
+                << d.pose_TS[0] << ' ' << d.pose_TS[1] << ' '
+                << d.pose_TS[2] << "] rpy_deg=["
+                << d.pose_TS[3] * kRadToDeg << ' '
+                << d.pose_TS[4] * kRadToDeg << ' '
+                << d.pose_TS[5] * kRadToDeg << ']'
+
+                << " | TASK_ERR_T_mm=["
+                << d.task_error_T_m[0] * 1000.0 << ' '
+                << d.task_error_T_m[1] * 1000.0 << ' '
+                << d.task_error_T_m[2] * 1000.0 << "] norm_mm="
+                << d.task_error_T_norm_m * 1000.0
+
+                << " TASK_ERR_R_deg=["
+                << d.task_error_R_deg[0] << ' '
+                << d.task_error_R_deg[1] << ' '
+                << d.task_error_R_deg[2] << "] norm_deg="
+                << d.task_error_R_norm_deg;
           }
           if (pbvs_result) {
-            constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
             std::cout
-                << " | pbvs="
+                << " | PBVS state="
                 << panda_tracker::pbvs_state_text(pbvs_result->state)
-                << " p_err_mm="
+                << " p_err_B_mm=["
+                << pbvs_result->position_error_base_m[0] * 1000.0 << ' '
+                << pbvs_result->position_error_base_m[1] * 1000.0 << ' '
+                << pbvs_result->position_error_base_m[2] * 1000.0
+                << "] p_norm_mm="
                 << pbvs_result->position_error_norm_m * 1000.0
-                << " r_err_deg="
+                << " r_err_body_deg=["
+                << pbvs_result->orientation_error_body_rad[0] * kRadToDeg
+                << ' '
+                << pbvs_result->orientation_error_body_rad[1] * kRadToDeg
+                << ' '
+                << pbvs_result->orientation_error_body_rad[2] * kRadToDeg
+                << "] r_norm_deg="
                 << pbvs_result->orientation_error_norm_rad * kRadToDeg
-                << " proposed_v_mps="
-                << pbvs_result->proposed_linear_speed_mps
-                << " proposed_w_degps="
-                << pbvs_result->proposed_angular_speed_radps * kRadToDeg;
+                << " v_B_mps=["
+                << pbvs_result->proposed_linear_velocity_base_mps[0] << ' '
+                << pbvs_result->proposed_linear_velocity_base_mps[1] << ' '
+                << pbvs_result->proposed_linear_velocity_base_mps[2] << ']'
+                << " w_body_degps=["
+                << pbvs_result->proposed_angular_velocity_body_radps[0] *
+                       kRadToDeg << ' '
+                << pbvs_result->proposed_angular_velocity_body_radps[1] *
+                       kRadToDeg << ' '
+                << pbvs_result->proposed_angular_velocity_body_radps[2] *
+                       kRadToDeg << ']';
             if (!pbvs_result->reason.empty()) {
               std::cout << " reason=" << pbvs_result->reason;
             }

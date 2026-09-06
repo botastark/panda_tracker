@@ -1,0 +1,65 @@
+# Low-latency CLOSED-LOOP first test.
+# Motion still requires BOTH motion_enabled:true and --enable-motion.
+
+motion_enabled: true
+require_tracker_source_filter: true
+stop_on_tracking_loss: true
+
+# Axis mask. Translation = Panda base axes. Rotation = flange/body axes.
+# FIRST TEST: X ONLY.
+control_x: true
+control_y: false
+control_z: false
+control_rx: false
+control_ry: false
+control_rz: false
+
+max_arm_wait_s: 15.0
+max_runtime_s: 5.0
+
+# Start very slowly.
+hard_max_linear_speed_mps: 0.002
+hard_max_angular_speed_degps: 1.0
+hard_max_command_lead_m: 0.001
+hard_max_angular_command_lead_deg: 1.0
+
+# These limits apply only to ENABLED command axes.
+hard_max_active_position_error_m: 0.080
+hard_max_active_orientation_error_deg: 10.0
+
+hard_max_tracker_age_s: 0.150
+max_command_age_s: 0.05
+
+# Stability history is a quality gate only; it does NOT buffer the control path.
+quality_window_samples: 12
+quality_min_samples: 10
+
+# Low-latency EMA. 1.0 = no smoothing.
+tracker_ema_alpha_position: 0.70
+tracker_ema_alpha_orientation: 0.70
+
+# Reject physically implausible new T_TS packets before filtering.
+tracker_max_position_jump_m: 0.15
+tracker_max_angle_jump_deg: 180
+
+# Raw T_TS stationary spread required for arming.
+# Based conservatively on the measured stationary tracker noise.
+max_task_std_x_m: 0.15
+max_task_std_y_m: 0.15
+max_task_std_z_m: 0.50
+max_task_std_roll_deg: 35.0
+max_task_std_pitch_deg: 35.0
+max_task_std_yaw_deg: 8.0
+
+# Independent physical-flange envelope from control-loop startup.
+# X-only test: only X gets meaningful travel.
+max_travel_x_m: 0.010
+max_travel_y_m: 0.002
+max_travel_z_m: 0.002
+max_rotation_travel_deg: 2.0
+
+# PBVS must be safe for 20 consecutive 100 Hz cycles before motion begins.
+arm_tracking_cycles: 10
+
+min_control_command_success_rate: 0.9
+communication_grace_s: 2.0

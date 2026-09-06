@@ -444,9 +444,19 @@ bool PbvsController::task_pose_valid(
 Transform PbvsController::goal_pose(
     const Transform& T_BE,
     const Transform& T_TS) const {
-  const Transform delta_T_S = multiply_transform(
+  Transform delta_T_S = multiply_transform(
       invert_transform(T_TS),
       config_.T_TS_des);
+
+  // Critical for translation-only operation: remove target orientation error
+  // BEFORE conjugating through the flange/tool lever arm. Otherwise noisy PnP
+  // rotation creates a false translation command.
+  if (!config_.control_orientation) {
+    delta_T_S = make_transform(
+        identity_matrix3(),
+        transform_translation(delta_T_S));
+  }
+
   const Transform delta_T_E = multiply_transform(
       multiply_transform(config_.T_ES, delta_T_S),
       invert_transform(config_.T_ES));

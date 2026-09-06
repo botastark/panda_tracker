@@ -8,7 +8,7 @@
 #   3) Set motion_enabled: true.
 #   4) pbvs_robot STILL requires --enable-motion on the command line.
 
-motion_enabled: false
+motion_enabled: true
 translation_only: true
 require_tracker_source_filter: true
 

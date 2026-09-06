@@ -103,5 +103,36 @@ if(PANDA_TRACKER_BUILD_ROBOT)
             panda_tracker_core
             Franka::Franka
     )
+    add_executable(pbvs_robot_flange
+      cpp/src/pbvs_robot_flange.cpp
+    )
+
+    target_link_libraries(pbvs_robot_flange
+      PRIVATE
+        panda_tracker_core
+        Franka::Franka
+        Threads::Threads
+    )
+
+    target_compile_features(pbvs_robot_flange PRIVATE cxx_std_17)
+
+    add_executable(pbvs_observer_full_pose
+        cpp/src/pbvs_observer_full_pose.cpp
+    )
+    target_link_libraries(pbvs_observer_full_pose
+        PRIVATE
+            panda_tracker_core
+            Franka::Franka
+            Threads::Threads
+    )
+    add_executable(pbvs_observer_axis_diagnostics
+        cpp/src/pbvs_observer_axis_diagnostics.cpp
+    )
+    target_link_libraries(pbvs_observer_axis_diagnostics
+        PRIVATE
+            panda_tracker_core
+            Franka::Franka
+            Threads::Threads
+    )
 
 endif()

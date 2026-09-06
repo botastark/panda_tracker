@@ -364,6 +364,16 @@ double seconds_between(Clock::time_point later, Clock::time_point earlier) {
   return std::chrono::duration<double>(later - earlier).count();
 }
 
+std::array<double, 6> pose_from_row_major_transform(
+    const panda_tracker::Transform& T) {
+  return {{
+      T[3], T[7], T[11],
+      std::atan2(T[9], T[10]),
+      std::atan2(-T[8], std::hypot(T[0], T[4])),
+      std::atan2(T[4], T[0]),
+  }};
+}
+
 enum class TrackerHealth {
   kMissing,
   kStale,
@@ -585,6 +595,8 @@ int main(int argc, char** argv) {
           << "PBVS rate_hz: " << pbvs_config->control_rate_hz << '\n'
           << "Tool geometry status: "
           << pbvs_config->tool_geometry_status << '\n'
+          << "Observer task: TRANSLATION + ORIENTATION\n"
+          << "Desired aligned orientation: identity (0 deg), NOT 180 deg\n"
           << "COMPUTE ONLY: proposed poses and velocities are logged but "
              "never sent.\n";
     }
@@ -748,14 +760,46 @@ int main(int argc, char** argv) {
 
           std::cout << " | tracker=" << tracker_health_text(health);
           if (tracker.available) {
+            const auto T_CT = tracker.packet.T_TS;
+            const auto T_TC = panda_tracker::invert_transform(T_CT);
+            // Current physical stick pose in target frame:
+            // T_TS = T_TC * T_CS. The legacy config stores T_FC in T_ES,
+            // so T_CS is reconstructed from the explicit known first-experiment
+            // geometry used by this observer build.
+            const panda_tracker::Transform T_CS = {{
+                1.0, 0.0, 0.0, -0.040,
+                0.0, 1.0, 0.0,  0.000,
+                0.0, 0.0, 1.0,  0.183,
+                0.0, 0.0, 0.0,  1.000,
+            }};
+            const auto T_TS = panda_tracker::multiply_transform(T_TC, T_CS);
+            const auto pose_CT = pose_from_row_major_transform(T_CT);
+            const auto pose_TC = pose_from_row_major_transform(T_TC);
+            const auto pose_TS = pose_from_row_major_transform(T_TS);
+            constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+
             std::cout
                 << " seq=" << tracker.packet.sequence_id
                 << " confidence=" << tracker.packet.confidence
                 << " age_ms=" << tracker_age_s * 1000.0
                 << " p_CT_m=["
-                << tracker.packet.T_TS[3] << ' '
-                << tracker.packet.T_TS[7] << ' '
-                << tracker.packet.T_TS[11] << ']';
+                << pose_CT[0] << ' ' << pose_CT[1] << ' ' << pose_CT[2] << ']'
+                << " rpy_CT_deg=["
+                << pose_CT[3]*kRadToDeg << ' '
+                << pose_CT[4]*kRadToDeg << ' '
+                << pose_CT[5]*kRadToDeg << ']'
+                << " | p_TC_m=["
+                << pose_TC[0] << ' ' << pose_TC[1] << ' ' << pose_TC[2] << ']'
+                << " rpy_TC_deg=["
+                << pose_TC[3]*kRadToDeg << ' '
+                << pose_TC[4]*kRadToDeg << ' '
+                << pose_TC[5]*kRadToDeg << ']'
+                << " | p_TS_m=["
+                << pose_TS[0] << ' ' << pose_TS[1] << ' ' << pose_TS[2] << ']'
+                << " rpy_TS_deg=["
+                << pose_TS[3]*kRadToDeg << ' '
+                << pose_TS[4]*kRadToDeg << ' '
+                << pose_TS[5]*kRadToDeg << ']';
           }
           if (pbvs_result) {
             constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;

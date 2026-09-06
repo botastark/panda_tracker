@@ -1,0 +1,33 @@
+# First physical PBVS experiment safety configuration.
+# Parsed by pbvs_robot_flange.cpp as flat key: value YAML.
+#
+# Start with motion disabled. Run the observer / dry checks first.
+# To physically move, change ONLY:
+#   motion_enabled: true
+# and still pass --enable-motion at runtime.
+
+motion_enabled: false
+translation_only: true
+require_tracker_source_filter: true
+
+max_arm_wait_s: 15.0
+max_runtime_s: 10.0
+
+# Independent caps layered on top of pbvs_first_experiment.json.
+hard_max_linear_speed_mps: 0.010
+hard_max_command_lead_m: 0.002
+hard_max_position_error_m: 0.080
+hard_max_tracker_age_s: 0.120
+
+# PBVS worker -> 1 kHz libfranka callback watchdog.
+max_command_age_s: 0.050
+
+# PBVS itself requires 30 fresh tracker frames. After PBVS reaches TRACKING,
+# require another 20 consecutive safe 100 Hz cycles before arming motion.
+arm_tracking_cycles: 20
+
+min_control_command_success_rate: 0.95
+communication_grace_s: 0.50
+
+stop_on_tracking_loss: true
+allow_orientation_motion: false
