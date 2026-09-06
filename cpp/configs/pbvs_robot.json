@@ -139,12 +139,37 @@
     ]
   ],
   "tool_load_nominal": {
-    "mass_kg": 0.175,
+    "model_status": "estimated_v1_preflight_validation_required",
+    "application_frame": "franka_flange_F",
+    "includes_disabled_panda_hand": true,
+    "panda_hand_and_two_fingers_mass_kg": 0.7126,
+    "custom_payload_mass_kg": 0.175,
+    "mass_kg": 0.8876,
     "camera_and_lens_mass_kg": 0.098,
     "printed_parts_and_sphere_mass_kg": 0.061,
     "remaining_fasteners_and_cable_mass_kg": 0.016,
-    "center_of_mass_H_m": null,
-    "inertia_at_com_kg_m2": null
+    "center_of_mass_F_m": [
+      0.0104131232,
+      0.00200782971,
+      0.03766278
+    ],
+    "inertia_at_com_F_kg_m2_column_major": [
+      0.00266306725,
+      -0.000714542235,
+      0.0000240986646,
+      -0.000714542235,
+      0.00256981408,
+      0.000134342278,
+      0.0000240986646,
+      0.000134342278,
+      0.00207874837
+    ],
+    "assumptions": [
+      "Robot end-effector mass m_ee is zero; the complete Hand and tool are applied as one load",
+      "Standard Panda Hand mounting rotation of -45 degrees about flange Z",
+      "Finger opening is 0.038 m",
+      "Custom-part COM and inertia are geometry-based estimates and require stationary preflight validation"
+    ]
   },
   "tool_visualization": {
     "show_debug_frames": true,
