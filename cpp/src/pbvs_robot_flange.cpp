@@ -1095,7 +1095,6 @@ int main(int argc, char **argv)
 
     try
     {
-      // A real-time scheduling failure is a hard preflight failure for motion.
       franka::Robot robot(options.robot_ip, franka::RealtimeConfig::kIgnore);
       if (options.recover)
       {
