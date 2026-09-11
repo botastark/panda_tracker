@@ -1,0 +1,148 @@
+# Position-only PBVS test configuration.
+# TUNED VARIANT v2: corrects the kp=2.5 overshoot/limit-cycle seen in the
+# previous experiment (req-vs-shaped direction mismatch up to 152.6 deg,
+# repeated arm_packets resets, eventual kCommunication stop with
+# travel_mm=[-24.8,2.4,-0.05]).
+#
+# Change from the v1 tuned config: kp_position 2.5 -> 1.5. Everything else
+# from v1 (relaxed accel/jerk, lighter filter smoothing) is kept, since the
+# shaper reaching its target cleanly was not the problem -- the gain being
+# too high relative to total loop latency (filter + non-RT jitter) was.
+#
+# Also adds position_deadband_m as a forward-looking field: it is inert
+# until position_servo.cpp is patched to read/apply it (see
+# position_servo_deadband_patch.md). Harmless to include now; the current
+# binary will simply ignore an unknown key or you can omit it if your
+# config loader errors on unrecognized fields -- check before running.
+
+motion_enabled: true
+
+# Still diagnostic (RT enforcement not fixed yet per user constraint).
+realtime_enforced: false
+
+require_tracker_source_filter: true
+stop_on_tracking_loss: true
+stop_on_robot_contact: true
+worker_rate_hz: 100.0
+
+# ---------------------------------------------------------------------------
+# Gradual axis enable
+# ---------------------------------------------------------------------------
+control_x: true
+control_y: true
+control_z: false
+
+# ---------------------------------------------------------------------------
+# Position servo -- kp reduced from the unstable 2.5 back to 1.5.
+#
+# Evidence from the kp=2.5 run: req-vs-shaped direction mismatch reached
+# 137.8 deg and 152.6 deg at small errors (rows with err_norm_mm 1.55 and
+# 2.64), meaning the arm was commanded almost directly backward relative
+# to the freshly measured error one cycle later -- a limit cycle, not slow
+# convergence. kp=1.5 keeps meaningfully more authority than the original
+# 1.0 baseline without doubling gain on top of an already-latent loop
+# (7-sample median filter + 0.25 EMA + non-RT jitter).
+#
+# If 1.5 still overshoots (watch for angle mismatch beyond ~30-40 deg near
+# small errors, or arm_packets resetting repeatedly), step down to 1.2
+# before touching accel/jerk again.
+# ---------------------------------------------------------------------------
+kp_position: 1.5
+max_linear_speed_mps: 0.03
+
+# Kept from v1 -- these were not implicated in the oscillation. The shaper
+# reaching its commanded velocity quickly is still desirable; the problem
+# was the commanded velocity itself reversing sign too aggressively.
+max_linear_acceleration_mps2: 0.030
+max_linear_jerk_mps3: 0.150
+
+# Forward-looking: only takes effect once position_servo.cpp implements the
+# dead-band (see position_servo_deadband_patch.md). Even at kp=1.5, rows
+# with err_norm_mm under ~2-3mm in the previous run still produced
+# nontrivial commanded velocity (2.6-3.9 mm/s) that likely contributes to
+# residual chatter once the oscillation itself is fixed.
+position_deadband_m: 0.0015
+
+hold_z_when_control_disabled: true
+kp_z_hold: 2.0
+max_z_hold_speed_mps: 0.005
+max_position_error_m: 0.400
+
+# ---------------------------------------------------------------------------
+# Freshness / arming (unchanged)
+# ---------------------------------------------------------------------------
+robot_state_timeout_s: 0.100
+tracker_timeout_s: 0.150
+tracking_loss_grace_s: 0.750
+command_timeout_s: 0.050
+arm_valid_packets: 5
+max_arm_wait_s: 15.0
+max_motion_runtime_s: 0.0
+max_stop_time_s: 2.0
+
+# ---------------------------------------------------------------------------
+# Incoming tracker filter (unchanged from v1)
+# ---------------------------------------------------------------------------
+filter_median_window_samples: 5
+filter_ema_alpha: 0.35
+filter_max_filtered_jump_m: 0.020
+
+# ---------------------------------------------------------------------------
+# Physical flange travel / safety envelopes (unchanged)
+# ---------------------------------------------------------------------------
+max_travel_m: [0.500, 0.500, 0.050]
+braking_margin_m: 0.005
+max_rotation_travel_deg: 30.0
+
+max_start_joint_speed_radps: 0.050
+max_running_joint_speed_radps: 0.500
+
+max_command_joint_speed_radps: 0.35
+max_command_joint_acceleration_radps2: 0.50
+max_command_joint_jerk_radps3: 50.0
+jacobian_damping: 0.005
+stop_joint_velocity_epsilon_radps: 0.001
+max_abs_joint_torque_nm: [80, 80, 80, 80, 11, 11, 11]
+max_abs_external_joint_torque_nm: [4, 4, 4, 4, 3, 3, 3]
+max_abs_joint_torque_rate_nmps: [800, 800, 800, 800, 300, 300, 300]
+
+wrench_bias_enabled: true
+wrench_bias_settle_s: 1.0
+wrench_bias_samples: 100
+max_external_force_n: 15.0
+max_external_torque_nm: 5.0
+max_raw_external_force_n: 20.0
+max_raw_external_torque_nm: 10.0
+torque_speed_derate_ratio: 0.80
+torque_monitor_grace_s: 0.50
+torque_violation_cycles: 5
+
+# NOTE: kept at 0.90. Do not lower this to mask the oscillation -- the
+# previous kCommunication stop was a real consequence of unstable motion,
+# not a nuisance threshold. It should stop firing once kp=1.5 removes the
+# overshoot/reversal pattern.
+min_control_command_success_rate: 0.90
+communication_grace_s: 2.0
+
+stop_velocity_epsilon_mps: 0.00002
+stop_acceleration_epsilon_mps2: 0.0005
+
+# ---------------------------------------------------------------------------
+# Complete flange load (unchanged -- do not touch while tuning motion gains)
+# ---------------------------------------------------------------------------
+load_model_enabled: true
+load_model_includes_end_effector: true
+load_mass_kg: 0.8876
+load_com_F_m: [0.0104131232, 0.00200782971, 0.03766278]
+load_inertia_at_com_F_kg_m2: [0.00266306725, -0.000714542235, 0.0000240986646, -0.000714542235, 0.00256981408, 0.000134342278, 0.0000240986646, 0.000134342278, 0.00207874837]
+load_settle_s: 1.0
+max_preexisting_ee_mass_kg: 0.001
+
+# ---------------------------------------------------------------------------
+# Calibrated/measured geometry (unchanged)
+# ---------------------------------------------------------------------------
+T_FS_row_major: [0.7277492821704733, -0.6855555704774725, 0.019863083538750874, -0.007296210, 0.6856294247671111, 0.7279403600224679, 0.003888977228002077, 0.005149104, -0.01712525018447189, 0.010788514154718709, 0.9997951459016254, 0.280329360, 0.0, 0.0, 0.0, 1.0]
+
+T_CS_row_major: [1.0, 0.0, 0.0, -0.040, 0.0, 1.0, 0.0, 0.000, 0.0, 0.0, 1.0, 0.183, 0.0, 0.0, 0.0, 1.0]
+
+T_TS_des_row_major: [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.050, 0.0, 0.0, 0.0, 1.0]

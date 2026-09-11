@@ -45,6 +45,13 @@ struct PositionTrackingConfig {
   double max_linear_jerk_mps3{0.020};
   double max_position_error_m{0.080};
 
+  // While Z tracking is disabled, actively hold the physical flange at its
+  // startup base-frame Z position. When control_z=true this hold is bypassed
+  // and PBVS owns Z normally.
+  bool hold_z_when_control_disabled{true};
+  double kp_z_hold{2.0};
+  double max_z_hold_speed_mps{0.005};
+
   // Diagnostic-only setpoint bias added to the PBVS translational error in
   // Panda base frame B. Default zero = normal PBVS.
   Vector3 diagnostic_position_bias_B_m{{0.0, 0.0, 0.0}};
@@ -73,6 +80,14 @@ struct PositionTrackingConfig {
 
   double max_start_joint_speed_radps{0.050};
   double max_running_joint_speed_radps{0.500};
+
+  // Joint-velocity motion-generator limits. These are command-shaping limits,
+  // intentionally below max_running_joint_speed_radps.
+  double max_command_joint_speed_radps{0.350};
+  double max_command_joint_acceleration_radps2{0.500};
+  double max_command_joint_jerk_radps3{50.0};
+  double jacobian_damping{0.050};
+  double stop_joint_velocity_epsilon_radps{0.001};
 
   std::array<double, 7> max_abs_joint_torque_nm{
       {80, 80, 80, 80, 11, 11, 11}};

@@ -56,6 +56,11 @@ struct StopDiagnostics {
   Vector3 timeout_limited_velocity_B_mps{};
   Vector3 timeout_last_commanded_velocity_B_mps{};
   Vector3 timeout_last_commanded_acceleration_B_mps2{};
+
+  std::array<double, 7> timeout_limited_qdot_radps{};
+  std::array<double, 7> timeout_dq_d_radps{};
+  std::array<double, 7> timeout_ddq_d_radps2{};
+
   double timeout_elapsed_s{0.0};
   bool forced_finish_after_stop_timeout{false};
 };

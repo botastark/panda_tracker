@@ -31,6 +31,7 @@ PositionServo::PositionServo(const PositionTrackingConfig& config)
     : axes_(config.control_axes),
       kp_position_(config.kp_position),
       max_linear_speed_mps_(config.max_linear_speed_mps),
+      diagnostic_position_bias_B_m_(config.diagnostic_position_bias_B_m),
       T_FS_(config.T_FS),
       T_CS_(config.T_CS),
       T_TS_des_(config.T_TS_des) {}
@@ -82,6 +83,15 @@ PositionServoResult PositionServo::compute(
       transform_translation(T_BF));
 
   result.active_error_B_m = result.error_B_m;
+
+  // Diagnostic-only relative setpoint shift in base frame. With a non-zero
+  // value this deliberately asks the closed loop to settle away from the
+  // nominal PBVS setpoint. This is used only to make a slow test motion
+  // visually obvious. Zero bias gives the normal controller.
+  for (std::size_t i = 0; i < 3; ++i) {
+    result.active_error_B_m[i] += diagnostic_position_bias_B_m_[i];
+  }
+
   if (!axes_.x) result.active_error_B_m[0] = 0.0;
   if (!axes_.y) result.active_error_B_m[1] = 0.0;
   if (!axes_.z) result.active_error_B_m[2] = 0.0;

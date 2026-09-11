@@ -1,4 +1,5 @@
 #include "panda_tracker/position_servo.h"
+#include "panda_tracker/joint_velocity_mapper.h"
 #include "panda_tracker/position_tracking_config.h"
 #include "panda_tracker/robot_safety.h"
 #include "panda_tracker/tracker_position_filter.h"
@@ -6,6 +7,7 @@
 
 #include <franka/control_types.h>
 #include <franka/exception.h>
+#include <franka/model.h>
 #include <franka/rate_limiting.h>
 #include <franka/robot.h>
 
@@ -31,6 +33,8 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using panda_tracker::DerateSource;
 using panda_tracker::FilterUpdate;
+using panda_tracker::JointVector7;
+using panda_tracker::Twist6;
 using panda_tracker::PositionServo;
 using panda_tracker::PositionTrackingConfig;
 using panda_tracker::RuntimeSafetyMonitor;
@@ -163,9 +167,19 @@ struct ServoCommand {
 
 struct RtDiagnostics {
   Vector3 requested_after_safety_B_mps{};
-  Vector3 limited_B_mps{};
-  std::array<double, 3> last_commanded_B_mps{};
-  std::array<double, 3> last_commanded_accel_B_mps2{};
+  Vector3 shaped_cartesian_B_mps{};
+  Vector3 mapped_raw_cartesian_B_mps{};
+  Vector3 achieved_cartesian_B_mps{};
+
+  double z_hold_error_m{0.0};
+  double z_hold_command_mps{0.0};
+  bool z_hold_active{false};
+
+  JointVector7 raw_qdot_radps{};
+  JointVector7 limited_qdot_radps{};
+  JointVector7 last_desired_qdot_radps{};
+  JointVector7 last_desired_qddot_radps2{};
+
   double safety_speed_scale{1.0};
 
   DerateSource derate_source{DerateSource::kNone};
@@ -387,7 +401,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout
-        << "POSITION-ONLY PBVS ROBOT CONTROLLER\n"
+        << "POSITION-ONLY PBVS / JOINT-VELOCITY ROBOT CONTROLLER\n"
         << "Robot: " << options.robot_ip << '\n'
         << "Tracker: " << options.tracker_bind_ip << ':'
         << options.tracker_port
@@ -398,6 +412,14 @@ int main(int argc, char** argv) {
         << config.diagnostic_position_bias_B_m[1] * 1000.0 << ", "
         << config.diagnostic_position_bias_B_m[2] * 1000.0 << "]\n"
         << "Orientation control: OFF (tracker PnP orientation ignored)\n"
+        << "Z behavior when control_z=false: "
+        << (config.hold_z_when_control_disabled
+                ? "ACTIVE startup-height hold"
+                : "zero commanded Z velocity only")
+        << "\n"
+        << "Z hold kp/max speed: "
+        << config.kp_z_hold << " 1/s, "
+        << config.max_z_hold_speed_mps * 1000.0 << " mm/s\n"
         << "Worker rate: " << config.worker_rate_hz << " Hz\n"
         << "Filter: median=" << config.filter.median_window_samples
         << " samples, EMA alpha=" << config.filter.ema_alpha
@@ -406,10 +428,16 @@ int main(int argc, char** argv) {
         << "Tracker stale/grace: "
         << config.tracker_timeout_s * 1000.0 << " / "
         << config.tracking_loss_grace_s * 1000.0 << " ms\n"
-        << "Max speed/acceleration/jerk: "
+        << "Max Cartesian speed/acceleration/jerk: "
         << config.max_linear_speed_mps * 1000.0 << " mm/s, "
         << config.max_linear_acceleration_mps2 * 1000.0 << " mm/s^2, "
         << config.max_linear_jerk_mps3 * 1000.0 << " mm/s^3\n"
+        << "Joint motion generator: translation-only DLS lambda="
+        << config.jacobian_damping
+        << ", qdot/accel/jerk="
+        << config.max_command_joint_speed_radps << " rad/s, "
+        << config.max_command_joint_acceleration_radps2 << " rad/s^2, "
+        << config.max_command_joint_jerk_radps3 << " rad/s^3\n"
         << "Motion runtime: ";
 
     if (config.max_motion_runtime_s <= 0.0) {
@@ -422,6 +450,9 @@ int main(int argc, char** argv) {
         << "Realtime enforcement: "
         << (config.realtime_enforced ? "ON" : "OFF (diagnostic)") << '\n'
         << "Waiting for filtered tracker packets and robot state...\n";
+
+    // Load kinematic model once, outside the real-time callback.
+    franka::Model model = robot.loadModel();
 
     AtomicRobotSnapshot robot_mailbox;
     AtomicServoCommand command_mailbox;
@@ -621,18 +652,36 @@ int main(int argc, char** argv) {
                   << rt_diag.requested_after_safety_B_mps[0] * 1000.0 << ','
                   << rt_diag.requested_after_safety_B_mps[1] * 1000.0 << ','
                   << rt_diag.requested_after_safety_B_mps[2] * 1000.0 << ']'
-                  << " limited_mmps=["
-                  << rt_diag.limited_B_mps[0] * 1000.0 << ','
-                  << rt_diag.limited_B_mps[1] * 1000.0 << ','
-                  << rt_diag.limited_B_mps[2] * 1000.0 << ']'
-                  << " O_dP_EE_c_mmps=["
-                  << rt_diag.last_commanded_B_mps[0] * 1000.0 << ','
-                  << rt_diag.last_commanded_B_mps[1] * 1000.0 << ','
-                  << rt_diag.last_commanded_B_mps[2] * 1000.0 << ']'
-                  << " O_ddP_EE_c_mmps2=["
-                  << rt_diag.last_commanded_accel_B_mps2[0] * 1000.0 << ','
-                  << rt_diag.last_commanded_accel_B_mps2[1] * 1000.0 << ','
-                  << rt_diag.last_commanded_accel_B_mps2[2] * 1000.0 << ']'
+                  << " shaped_mmps=["
+                  << rt_diag.shaped_cartesian_B_mps[0] * 1000.0 << ','
+                  << rt_diag.shaped_cartesian_B_mps[1] * 1000.0 << ','
+                  << rt_diag.shaped_cartesian_B_mps[2] * 1000.0 << ']'
+                  << " mapped_raw_mmps=["
+                  << rt_diag.mapped_raw_cartesian_B_mps[0] * 1000.0 << ','
+                  << rt_diag.mapped_raw_cartesian_B_mps[1] * 1000.0 << ','
+                  << rt_diag.mapped_raw_cartesian_B_mps[2] * 1000.0 << ']'
+                  << " achieved_mmps=["
+                  << rt_diag.achieved_cartesian_B_mps[0] * 1000.0 << ','
+                  << rt_diag.achieved_cartesian_B_mps[1] * 1000.0 << ','
+                  << rt_diag.achieved_cartesian_B_mps[2] * 1000.0 << ']'
+                  << " qdot_raw_max="
+                  << panda_tracker::max_abs_joint_value(
+                         rt_diag.raw_qdot_radps)
+                  << " qdot_limited_max="
+                  << panda_tracker::max_abs_joint_value(
+                         rt_diag.limited_qdot_radps)
+                  << " dq_d_max="
+                  << panda_tracker::max_abs_joint_value(
+                         rt_diag.last_desired_qdot_radps)
+                  << " ddq_d_max="
+                  << panda_tracker::max_abs_joint_value(
+                         rt_diag.last_desired_qddot_radps2)
+                  << " z_hold="
+                  << (rt_diag.z_hold_active ? "YES" : "no")
+                  << " z_hold_err_mm="
+                  << rt_diag.z_hold_error_m * 1000.0
+                  << " z_hold_cmd_mmps="
+                  << rt_diag.z_hold_command_mps * 1000.0
                   << " cmd_success=" << rt_diag.control_command_success_rate
                   << " tracking_pause="
                   << (rt_diag.tracking_paused ? "YES" : "no")
@@ -681,9 +730,18 @@ int main(int argc, char** argv) {
         }
       };
 
+      // State of our explicit Cartesian command shaper. It runs before the
+      // Jacobian map, and the joint limiter then enforces joint-space
+      // velocity/acceleration/jerk continuity after inverse kinematics.
+      Twist6 last_shaped_twist{};
+      Twist6 last_shaped_acceleration{};
+
+      bool z_hold_reference_initialized = false;
+      double z_hold_reference_B_m = 0.0;
+
       robot.control(
           [&](const franka::RobotState& state,
-              franka::Duration period) -> franka::CartesianVelocities {
+              franka::Duration period) -> franka::JointVelocities {
             const double dt = std::max(0.0, period.toSec());
             control_elapsed_s += dt;
             if (ever_armed && !stopping) motion_elapsed_s += dt;
@@ -692,15 +750,19 @@ int main(int argc, char** argv) {
             const auto now = Clock::now();
             const Transform T_BF =
                 panda_tracker::physical_flange_pose(state);
+            const Vector3 flange_position_B =
+                panda_tracker::transform_translation(T_BF);
+
+            if (!z_hold_reference_initialized) {
+              z_hold_reference_B_m = flange_position_B[2];
+              z_hold_reference_initialized = true;
+            }
 
             robot_mailbox.publish(T_BF, now);
 
             const auto safety =
                 safety_monitor.update(state, T_BF, control_elapsed_s);
 
-            // Keep the latest diagnostics while running. Once a stop starts,
-            // preserve the diagnostics from the triggering instant instead of
-            // overwriting joint/value information during the deceleration.
             if (!stopping) {
               stop_diagnostics = safety.diagnostics;
             }
@@ -721,19 +783,12 @@ int main(int argc, char** argv) {
               begin_stop(StopReason::kArmTimeout);
             }
 
-            // max_motion_runtime_s <= 0 explicitly means unlimited runtime.
-            // Travel, tracking-loss, torque, wrench, contact, communication,
-            // joint-speed, signal and worker-failure stops remain active.
             if (ever_armed &&
                 config.max_motion_runtime_s > 0.0 &&
                 motion_elapsed_s >= config.max_motion_runtime_s) {
               begin_stop(StopReason::kRuntime);
             }
 
-            // The worker owns the tracker/filter/servo at 100 Hz. The
-            // command mailbox is lock-free for the RT path, so a preempted
-            // non-RT worker can no longer hold a mutex that blocks command
-            // exchange or robot-state publication.
             ServoCommand newest_command{};
             if (command_mailbox.read(newest_command)) {
               rt_command_cache = newest_command;
@@ -762,6 +817,25 @@ int main(int argc, char** argv) {
                       command.velocity_B_mps[i] * safety.speed_scale;
                 }
 
+                // control_z=false means "do not track target Z", not "allow
+                // physical Z to drift". Actively hold the startup physical
+                // flange height. When control_z=true, PBVS owns Z and this
+                // branch is skipped.
+                if (!config.control_axes.z &&
+                    config.hold_z_when_control_disabled &&
+                    z_hold_reference_initialized) {
+                  const double z_error_m =
+                      z_hold_reference_B_m - flange_position_B[2];
+                  const double unclamped_z_mps =
+                      config.kp_z_hold * z_error_m;
+                  desired_velocity[2] =
+                      std::clamp(
+                          unclamped_z_mps,
+                          -config.max_z_hold_speed_mps,
+                          config.max_z_hold_speed_mps) *
+                      safety.speed_scale;
+                }
+
                 if (panda_tracker::moving_toward_soft_travel_limit(
                         desired_velocity,
                         safety.diagnostics.travel_B_m,
@@ -775,11 +849,6 @@ int main(int argc, char** argv) {
                        config.stop_on_tracking_loss &&
                        got_command &&
                        (!command.valid || !command.armed)) {
-              // A short tracker dropout is not a reason to continue blindly
-              // with stale target motion. Immediately request zero velocity
-              // and decelerate. If fresh packets return and pass the normal
-              // re-arming gate before the grace interval expires, tracking
-              // resumes. Only a persistent outage becomes a terminal stop.
               tracking_paused = true;
               tracking_loss_elapsed_s += dt;
 
@@ -789,20 +858,19 @@ int main(int argc, char** argv) {
               }
             }
 
-            std::array<double, 6> desired_twist{{
+            Twist6 target_twist{{
                 desired_velocity[0],
                 desired_velocity[1],
                 desired_velocity[2],
                 0.0, 0.0, 0.0,
             }};
 
-            if (stopping) desired_twist.fill(0.0);
+            if (stopping) target_twist.fill(0.0);
 
-            // Explicit conservative translational speed/acceleration/jerk
-            // limits. robot.control() below disables libfranka's second rate
-            // limiter and command low-pass filter so this is the one explicit
-            // command-shaping stage.
-            const std::array<double, 6> limited_twist =
+            // Keep the same Cartesian speed/acceleration/jerk limits already
+            // used by the experiment, but now use our own previous command
+            // state rather than Cartesian FCI state fields.
+            const Twist6 shaped_twist =
                 franka::limitRate(
                     config.max_linear_speed_mps,
                     config.max_linear_acceleration_mps2,
@@ -810,24 +878,121 @@ int main(int argc, char** argv) {
                     deg_to_rad(1.0),
                     deg_to_rad(5.0),
                     deg_to_rad(50.0),
-                    desired_twist,
-                    state.O_dP_EE_c,
-                    state.O_ddP_EE_c);
+                    target_twist,
+                    last_shaped_twist,
+                    last_shaped_acceleration);
 
-            // Publish diagnostics without ever blocking the 1-kHz callback.
+            if (dt > 1e-9) {
+              for (std::size_t i = 0; i < 6; ++i) {
+                last_shaped_acceleration[i] =
+                    (shaped_twist[i] - last_shaped_twist[i]) / dt;
+              }
+            }
+            last_shaped_twist = shaped_twist;
+
+            // The PBVS command is a physical-flange twist expressed in base B,
+            // so use the base-frame zero Jacobian of the physical flange.
+            const auto jacobian =
+                model.zeroJacobian(franka::Frame::kFlange, state);
+
+            // Orientation control is OFF, so invert only the translational
+            // Jacobian. The previous 6D DLS solve unnecessarily constrained
+            // angular velocity and, near the current singular configuration,
+            // traded away base-frame Z even when requested vz was zero.
+            const panda_tracker::Vector3Velocity shaped_translation{{
+                shaped_twist[0],
+                shaped_twist[1],
+                shaped_twist[2],
+            }};
+
+            auto mapping =
+                panda_tracker::map_translation_to_joint_velocity(
+                    jacobian,
+                    shaped_translation,
+                    config.jacobian_damping);
+
+            if (!mapping.valid) {
+              begin_stop(StopReason::kWorkerFailure);
+              mapping.qdot_radps.fill(0.0);
+            }
+
+            // Explicit conservative joint command limits.
+            //
+            // This libfranka version does not expose the newer
+            // position-dependent joint-velocity limit helpers, so use the
+            // configured symmetric command cap directly.
+            //
+            // The independent runtime measured-joint-speed safety ceiling and
+            // Panda/libfranka native joint/reflex protections remain active.
+            std::array<double, 7> upper_velocity{};
+            std::array<double, 7> lower_velocity{};
+            std::array<double, 7> max_acceleration{};
+            std::array<double, 7> max_jerk{};
+
+            for (std::size_t i = 0; i < 7; ++i) {
+              upper_velocity[i] =
+                  config.max_command_joint_speed_radps;
+              lower_velocity[i] =
+                  -config.max_command_joint_speed_radps;
+              max_acceleration[i] =
+                  config.max_command_joint_acceleration_radps2;
+              max_jerk[i] =
+                  config.max_command_joint_jerk_radps3;
+            }
+
+            const Twist6 mapped_raw_twist =
+                mapping.achieved_twist;
+
+            const JointVector7 limited_qdot =
+                franka::limitRate(
+                    upper_velocity,
+                    lower_velocity,
+                    max_acceleration,
+                    max_jerk,
+                    mapping.qdot_radps,
+                    state.dq_d,
+                    state.ddq_d);
+
+            const Twist6 achieved_twist =
+                panda_tracker::jacobian_times_joint_velocity(
+                    jacobian, limited_qdot);
+
             if (rt_diag_mutex.try_lock()) {
               shared_rt_diag.requested_after_safety_B_mps = {{
-                  desired_twist[0], desired_twist[1], desired_twist[2]}};
-              shared_rt_diag.limited_B_mps = {{
-                  limited_twist[0], limited_twist[1], limited_twist[2]}};
-              shared_rt_diag.last_commanded_B_mps = {{
-                  state.O_dP_EE_c[0],
-                  state.O_dP_EE_c[1],
-                  state.O_dP_EE_c[2]}};
-              shared_rt_diag.last_commanded_accel_B_mps2 = {{
-                  state.O_ddP_EE_c[0],
-                  state.O_ddP_EE_c[1],
-                  state.O_ddP_EE_c[2]}};
+                  target_twist[0], target_twist[1], target_twist[2]}};
+              shared_rt_diag.shaped_cartesian_B_mps = {{
+                  shaped_twist[0], shaped_twist[1], shaped_twist[2]}};
+              shared_rt_diag.mapped_raw_cartesian_B_mps = {{
+                  mapped_raw_twist[0],
+                  mapped_raw_twist[1],
+                  mapped_raw_twist[2]}};
+              shared_rt_diag.achieved_cartesian_B_mps = {{
+                  achieved_twist[0],
+                  achieved_twist[1],
+                  achieved_twist[2]}};
+
+              shared_rt_diag.z_hold_active =
+                  !config.control_axes.z &&
+                  config.hold_z_when_control_disabled &&
+                  z_hold_reference_initialized;
+              shared_rt_diag.z_hold_error_m =
+                  shared_rt_diag.z_hold_active
+                      ? z_hold_reference_B_m - flange_position_B[2]
+                      : 0.0;
+              shared_rt_diag.z_hold_command_mps =
+                  shared_rt_diag.z_hold_active
+                      ? target_twist[2]
+                      : 0.0;
+
+              shared_rt_diag.raw_qdot_radps =
+                  mapping.qdot_radps;
+              shared_rt_diag.limited_qdot_radps =
+                  limited_qdot;
+              shared_rt_diag.last_desired_qdot_radps =
+                  state.dq_d;
+              shared_rt_diag.last_desired_qddot_radps2 =
+                  state.ddq_d;
+
               shared_rt_diag.safety_speed_scale = safety.speed_scale;
               shared_rt_diag.derate_source = safety.derate_source;
               shared_rt_diag.derate_joint_index = safety.derate_joint_index;
@@ -844,61 +1009,47 @@ int main(int argc, char** argv) {
             }
 
             if (stopping) {
-              bool limited_velocity_zero = true;
-              bool panda_commanded_velocity_zero = true;
+              bool command_zero = true;
+              bool panda_desired_zero = true;
 
-              // Stop completion is a velocity condition. We require both the
-              // velocity produced by our explicit limiter and libfranka's
-              // last commanded Cartesian velocity to be essentially zero.
-              //
-              // O_ddP_EE_c is deliberately NOT used as a completion gate:
-              // it is a commanded acceleration and can still be relatively
-              // large during the final jerk-limited approach to zero even
-              // when velocity is already negligible.
-              for (std::size_t i = 0; i < 3; ++i) {
-                limited_velocity_zero =
-                    limited_velocity_zero &&
-                    std::abs(limited_twist[i]) <=
-                        config.stop_velocity_epsilon_mps;
-                panda_commanded_velocity_zero =
-                    panda_commanded_velocity_zero &&
-                    std::abs(state.O_dP_EE_c[i]) <=
-                        config.stop_velocity_epsilon_mps;
+              for (std::size_t i = 0; i < 7; ++i) {
+                command_zero =
+                    command_zero &&
+                    std::abs(limited_qdot[i]) <=
+                        config.stop_joint_velocity_epsilon_radps;
+                panda_desired_zero =
+                    panda_desired_zero &&
+                    std::abs(state.dq_d[i]) <=
+                        config.stop_joint_velocity_epsilon_radps;
               }
 
-              if (limited_velocity_zero &&
-                  panda_commanded_velocity_zero) {
+              if (command_zero && panda_desired_zero) {
                 return franka::MotionFinished(
-                    franka::CartesianVelocities(limited_twist));
+                    franka::JointVelocities(limited_qdot));
               }
 
               if (stopping_elapsed_s >= config.max_stop_time_s) {
                 stop_diagnostics.timeout_elapsed_s =
                     stopping_elapsed_s;
-                for (std::size_t i = 0; i < 3; ++i) {
-                  stop_diagnostics.timeout_limited_velocity_B_mps[i] =
-                      limited_twist[i];
-                  stop_diagnostics
-                      .timeout_last_commanded_velocity_B_mps[i] =
-                      state.O_dP_EE_c[i];
-                  stop_diagnostics
-                      .timeout_last_commanded_acceleration_B_mps2[i] =
-                      state.O_ddP_EE_c[i];
-                }
+                stop_diagnostics.timeout_limited_qdot_radps =
+                    limited_qdot;
+                stop_diagnostics.timeout_dq_d_radps =
+                    state.dq_d;
+                stop_diagnostics.timeout_ddq_d_radps2 =
+                    state.ddq_d;
                 stop_diagnostics.forced_finish_after_stop_timeout = true;
 
-                std::array<double, 6> zero{};
+                JointVector7 zero{};
                 return franka::MotionFinished(
-                    franka::CartesianVelocities(zero));
+                    franka::JointVelocities(zero));
               }
             }
 
-            return franka::CartesianVelocities(limited_twist);
+            return franka::JointVelocities(limited_qdot);
           },
-          franka::ControllerMode::kCartesianImpedance,
+          franka::ControllerMode::kJointImpedance,
           false,
-          franka::kMaxCutoffFrequency);
-    } catch (...) {
+          franka::kMaxCutoffFrequency);    } catch (...) {
       robot_failure = std::current_exception();
     }
 
@@ -938,36 +1089,15 @@ int main(int argc, char** argv) {
                   << "STOP TIMEOUT:"
                   << " elapsed_s="
                   << stop_diagnostics.timeout_elapsed_s
-                  << " limited_mmps=["
-                  << stop_diagnostics
-                         .timeout_limited_velocity_B_mps[0] * 1000.0
-                  << ','
-                  << stop_diagnostics
-                         .timeout_limited_velocity_B_mps[1] * 1000.0
-                  << ','
-                  << stop_diagnostics
-                         .timeout_limited_velocity_B_mps[2] * 1000.0
-                  << ']'
-                  << " O_dP_EE_c_mmps=["
-                  << stop_diagnostics
-                         .timeout_last_commanded_velocity_B_mps[0] * 1000.0
-                  << ','
-                  << stop_diagnostics
-                         .timeout_last_commanded_velocity_B_mps[1] * 1000.0
-                  << ','
-                  << stop_diagnostics
-                         .timeout_last_commanded_velocity_B_mps[2] * 1000.0
-                  << ']'
-                  << " O_ddP_EE_c_mmps2=["
-                  << stop_diagnostics
-                         .timeout_last_commanded_acceleration_B_mps2[0] * 1000.0
-                  << ','
-                  << stop_diagnostics
-                         .timeout_last_commanded_acceleration_B_mps2[1] * 1000.0
-                  << ','
-                  << stop_diagnostics
-                         .timeout_last_commanded_acceleration_B_mps2[2] * 1000.0
-                  << ']'
+                  << " qdot_limited_max="
+                  << panda_tracker::max_abs_joint_value(
+                         stop_diagnostics.timeout_limited_qdot_radps)
+                  << " dq_d_max="
+                  << panda_tracker::max_abs_joint_value(
+                         stop_diagnostics.timeout_dq_d_radps)
+                  << " ddq_d_max="
+                  << panda_tracker::max_abs_joint_value(
+                         stop_diagnostics.timeout_ddq_d_radps2)
                   << '\n';
       }
     }

@@ -146,6 +146,8 @@ void validate(const PositionTrackingConfig& c) {
       !positive(c.max_linear_acceleration_mps2) ||
       !positive(c.max_linear_jerk_mps3) ||
       !positive(c.max_position_error_m) ||
+      !positive(c.kp_z_hold) ||
+      !positive(c.max_z_hold_speed_mps) ||
       !positive(c.robot_state_timeout_s) ||
       !positive(c.tracker_timeout_s) ||
       c.tracking_loss_grace_s < 0.0 ||
@@ -156,6 +158,11 @@ void validate(const PositionTrackingConfig& c) {
       !positive(c.max_rotation_travel_deg) ||
       !positive(c.max_start_joint_speed_radps) ||
       !positive(c.max_running_joint_speed_radps) ||
+      !positive(c.max_command_joint_speed_radps) ||
+      !positive(c.max_command_joint_acceleration_radps2) ||
+      !positive(c.max_command_joint_jerk_radps3) ||
+      !positive(c.jacobian_damping) ||
+      !positive(c.stop_joint_velocity_epsilon_radps) ||
       !positive(c.max_external_force_n) ||
       !positive(c.max_external_torque_nm) ||
       !positive(c.max_raw_external_force_n) ||
@@ -168,6 +175,12 @@ void validate(const PositionTrackingConfig& c) {
   if (!std::isfinite(c.max_motion_runtime_s)) {
     throw std::runtime_error(
         "max_motion_runtime_s must be finite; use 0 for unlimited runtime");
+  }
+
+  if (c.max_command_joint_speed_radps >
+      c.max_running_joint_speed_radps) {
+    throw std::runtime_error(
+        "max_command_joint_speed_radps must be <= max_running_joint_speed_radps");
   }
 
   for (double value : c.diagnostic_position_bias_B_m) {
@@ -279,6 +292,24 @@ bool load_position_tracking_config(
     c.max_position_error_m =
         parse_double(require("max_position_error_m"), "max_position_error_m");
 
+    const auto hold_z_it = values.find("hold_z_when_control_disabled");
+    if (hold_z_it != values.end()) {
+      c.hold_z_when_control_disabled =
+          parse_bool(hold_z_it->second, "hold_z_when_control_disabled");
+    }
+
+    const auto kp_z_hold_it = values.find("kp_z_hold");
+    if (kp_z_hold_it != values.end()) {
+      c.kp_z_hold =
+          parse_double(kp_z_hold_it->second, "kp_z_hold");
+    }
+
+    const auto max_z_hold_speed_it = values.find("max_z_hold_speed_mps");
+    if (max_z_hold_speed_it != values.end()) {
+      c.max_z_hold_speed_mps =
+          parse_double(max_z_hold_speed_it->second, "max_z_hold_speed_mps");
+    }
+
     // Optional diagnostic field so existing configs remain compatible.
     const auto diagnostic_bias_it =
         values.find("diagnostic_position_bias_B_m");
@@ -328,6 +359,30 @@ bool load_position_tracking_config(
         parse_double(require("max_start_joint_speed_radps"), "max_start_joint_speed_radps");
     c.max_running_joint_speed_radps =
         parse_double(require("max_running_joint_speed_radps"), "max_running_joint_speed_radps");
+
+    auto parse_optional_double = [&](const char* key, double& field) {
+      const auto it = values.find(key);
+      if (it != values.end()) {
+        field = parse_double(it->second, key);
+      }
+    };
+
+    parse_optional_double(
+        "max_command_joint_speed_radps",
+        c.max_command_joint_speed_radps);
+    parse_optional_double(
+        "max_command_joint_acceleration_radps2",
+        c.max_command_joint_acceleration_radps2);
+    parse_optional_double(
+        "max_command_joint_jerk_radps3",
+        c.max_command_joint_jerk_radps3);
+    parse_optional_double(
+        "jacobian_damping",
+        c.jacobian_damping);
+    parse_optional_double(
+        "stop_joint_velocity_epsilon_radps",
+        c.stop_joint_velocity_epsilon_radps);
+
     c.max_abs_joint_torque_nm =
         parse_array<7>(require("max_abs_joint_torque_nm"), "max_abs_joint_torque_nm");
     c.max_abs_external_joint_torque_nm =

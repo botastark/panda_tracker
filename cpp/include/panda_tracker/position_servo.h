@@ -29,6 +29,7 @@ class PositionServo {
   AxisMask axes_{};
   double kp_position_{1.0};
   double max_linear_speed_mps_{0.0005};
+  Vector3 diagnostic_position_bias_B_m_{{0.0, 0.0, 0.0}};
 
   Transform T_FS_{};
   Transform T_CS_{};
