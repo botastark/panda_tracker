@@ -33,35 +33,26 @@ cpp/src/pbvs_robot_position.cpp
 The tracker sends `T_CT`.
 
 ```text
-T_CT translation
- -> N-sample median
- -> EMA alpha 0.25
- -> post-filter 50 mm sanity jump
- -> fixed desired R_CT
+tracker T_CT
+ -> Filter : N-sample median + EMA alpha 0.25 +  post 50 mm sanity jump
+ -> PBVS translation error in Panda base frame
+ -> Cartesian speed / acceleration / jerk limiting
+ -> translation-only damped least-squares Jacobian 
+ -> joint velocity / acceleration / jerk limiting
+ franka::JointVelocities
 ```
 
-The robot side then computes:
-
+Software safety includes:
 ```text
-T_TS = inverse(T_CT_filtered) * T_CS
+startup-relative flange travel envelope
+joint speed / torque / torque-rate limits
+external joint torque monitoring
+external wrench monitoring
+tracker freshness / tracking-loss grace
+robot-state and command freshness
+communication success-rate checks
 ```
 
-and the translational PBVS error is mapped from stick S to physical flange F,
-then into Panda base B.
-
-An axis mask selects the translation axes:
-
-```yaml
-control_x: true
-control_y: false
-control_z: false
-```
-
-The output is a Cartesian velocity command:
-
-```text
-[vx, vy, vz, 0, 0, 0]
-```
 
 ## Build
 
