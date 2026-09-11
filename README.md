@@ -76,7 +76,7 @@ cmake --build build -j
   --preflight-only
 ```
 
-## First X-only motion test
+## XY-only motion test with telemetry
 
 ```bash
 ./build/pbvs_robot_position \
@@ -84,20 +84,18 @@ cmake --build build -j
   --tracker-bind-ip 0.0.0.0 \
   --tracker-source-ip 172.16.223.232 \
   --tracker-port 5000 \
-  --config cpp/configs/position_tracking_test.yml \
+  --config cpp/configs/position_tracking_xy_joint_velocity_active_zhold_v2.yml \
   --apply-load-model \
   --recover \
-  --enable-motion
+  --enable-motion \
+  --telemetry-csv /tmp/pbvs_telemetry.csv \
+  --telemetry-rate 50
 ```
-./build/pbvs_robot_position \
-  --robot-ip 172.16.0.2 \
-  --tracker-bind-ip 0.0.0.0 \
-  --tracker-source-ip 172.16.223.232 \
-  --tracker-port 5000 \
-  --config cpp/configs/position_tracking_xy_joint_velocity_validation.yml \
-  --apply-load-model \
-  --recover \
-  --enable-motion
+second terminal 
+```bash
+python3 plot_pbvs_telemetry.py /tmp/pbvs_telemetry.csv
+```
+
 ## Load model
 
 The config contains the last complete mass + COM + inertia set available in the

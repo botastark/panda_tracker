@@ -19,6 +19,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -88,6 +89,8 @@ struct Options {
   bool recover{false};
   bool preflight_only{false};
   bool apply_load_model{false};
+  std::string telemetry_csv{};
+  double telemetry_rate_hz{50.0};
 };
 
 std::uint16_t parse_port(const std::string& text) {
@@ -111,6 +114,8 @@ void print_help(const char* argv0) {
       << "  --recover             Explicit automaticErrorRecovery before preflight\n"
       << "  --apply-load-model    Apply configured combined flange load\n"
       << "  --preflight-only      Validate robot/load/wrench and exit\n"
+      << "  --telemetry-csv PATH Write non-real-time tuning telemetry\n"
+      << "  --telemetry-rate HZ  CSV rate in [1,100] (default: 50)\n"
       << "  --help\n";
 }
 
@@ -135,6 +140,14 @@ Options parse_options(int argc, char** argv) {
     else if (arg == "--recover") o.recover = true;
     else if (arg == "--preflight-only") o.preflight_only = true;
     else if (arg == "--apply-load-model") o.apply_load_model = true;
+    else if (arg == "--telemetry-csv") {
+      o.telemetry_csv = next("--telemetry-csv");
+    } else if (arg == "--telemetry-rate") {
+      o.telemetry_rate_hz = std::stod(next("--telemetry-rate"));
+      if (!(o.telemetry_rate_hz >= 1.0 && o.telemetry_rate_hz <= 100.0)) {
+        throw std::invalid_argument("--telemetry-rate must be in [1,100]");
+      }
+    }
     else if (arg == "--help" || arg == "-h") {
       print_help(argv[0]);
       std::exit(EXIT_SUCCESS);
@@ -166,6 +179,14 @@ struct ServoCommand {
 };
 
 struct RtDiagnostics {
+  double control_elapsed_s{0.0};
+  Vector3 flange_position_B_m{};
+  Wrench6 raw_wrench{};
+  Wrench6 corrected_wrench{};
+  JointVector7 external_joint_torque_nm{};
+  double external_force_norm_n{0.0};
+  double external_torque_norm_nm{0.0};
+
   Vector3 requested_after_safety_B_mps{};
   Vector3 shaped_cartesian_B_mps{};
   Vector3 mapped_raw_cartesian_B_mps{};
@@ -195,6 +216,90 @@ struct RtDiagnostics {
 
   bool available{false};
 };
+
+// Combined in the non-real-time tracker worker, then consumed by a dedicated
+// file writer. Neither the 1-kHz robot callback nor the tracker/servo worker
+// performs file I/O.
+struct TelemetrySnapshot {
+  std::uint64_t sequence{0};
+  double time_s{0.0};
+  double tracker_age_s{std::numeric_limits<double>::infinity()};
+  double robot_age_s{std::numeric_limits<double>::infinity()};
+  Vector3 raw_tracker_p_CT_m{};
+  Vector3 filtered_tracker_p_CT_m{};
+  Vector3 error_B_m{};
+  Vector3 servo_velocity_B_mps{};
+  RtDiagnostics rt{};
+  std::size_t accepted_packets{0};
+  std::size_t rejected_jumps{0};
+  std::size_t rejected_invalid{0};
+  bool raw_tracker_available{false};
+  bool filtered_tracker_available{false};
+  bool command_valid{false};
+  bool armed{false};
+};
+
+void write_telemetry_header(std::ostream& out) {
+  out << "time_s,tracker_age_ms,robot_age_ms,"
+      << "raw_tracker_x_mm,raw_tracker_y_mm,raw_tracker_z_mm,"
+      << "filtered_tracker_x_mm,filtered_tracker_y_mm,filtered_tracker_z_mm,"
+      << "error_x_mm,error_y_mm,error_z_mm,"
+      << "flange_x_mm,flange_y_mm,flange_z_mm,"
+      << "servo_vx_mmps,servo_vy_mmps,servo_vz_mmps,"
+      << "requested_vx_mmps,requested_vy_mmps,requested_vz_mmps,"
+      << "shaped_vx_mmps,shaped_vy_mmps,shaped_vz_mmps,"
+      << "achieved_vx_mmps,achieved_vy_mmps,achieved_vz_mmps,"
+      << "z_hold_error_mm,"
+      << "raw_fx_n,raw_fy_n,raw_fz_n,raw_tx_nm,raw_ty_nm,raw_tz_nm,"
+      << "fx_n,fy_n,fz_n,tx_nm,ty_nm,tz_nm,force_norm_n,torque_norm_nm,"
+      << "tau_ext_j1_nm,tau_ext_j2_nm,tau_ext_j3_nm,tau_ext_j4_nm,"
+      << "tau_ext_j5_nm,tau_ext_j6_nm,tau_ext_j7_nm,"
+      << "safety_scale,command_success,accepted,rejected_jump,rejected_invalid,"
+      << "raw_available,filtered_available,command_valid,armed,tracking_paused\n";
+}
+
+void write_telemetry_row(
+    std::ostream& out,
+    const TelemetrySnapshot& s) {
+  constexpr double kMilli = 1000.0;
+  out << std::fixed << std::setprecision(9)
+      << s.time_s << ','
+      << s.tracker_age_s * kMilli << ','
+      << s.robot_age_s * kMilli;
+
+  auto write_vec3 = [&](const Vector3& v, double scale) {
+    for (double value : v) out << ',' << value * scale;
+  };
+  auto write_wrench = [&](const Wrench6& w) {
+    for (double value : w) out << ',' << value;
+  };
+
+  write_vec3(s.raw_tracker_p_CT_m, kMilli);
+  write_vec3(s.filtered_tracker_p_CT_m, kMilli);
+  write_vec3(s.error_B_m, kMilli);
+  write_vec3(s.rt.flange_position_B_m, kMilli);
+  write_vec3(s.servo_velocity_B_mps, kMilli);
+  write_vec3(s.rt.requested_after_safety_B_mps, kMilli);
+  write_vec3(s.rt.shaped_cartesian_B_mps, kMilli);
+  write_vec3(s.rt.achieved_cartesian_B_mps, kMilli);
+  out << ',' << s.rt.z_hold_error_m * kMilli;
+  write_wrench(s.rt.raw_wrench);
+  write_wrench(s.rt.corrected_wrench);
+  out << ',' << s.rt.external_force_norm_n
+      << ',' << s.rt.external_torque_norm_nm;
+  for (double value : s.rt.external_joint_torque_nm) out << ',' << value;
+  out << ',' << s.rt.safety_speed_scale
+      << ',' << s.rt.control_command_success_rate
+      << ',' << s.accepted_packets
+      << ',' << s.rejected_jumps
+      << ',' << s.rejected_invalid
+      << ',' << (s.raw_tracker_available ? 1 : 0)
+      << ',' << (s.filtered_tracker_available ? 1 : 0)
+      << ',' << (s.command_valid ? 1 : 0)
+      << ',' << (s.armed ? 1 : 0)
+      << ',' << (s.rt.tracking_paused ? 1 : 0)
+      << '\n';
+}
 
 
 class AtomicRobotSnapshot {
@@ -449,6 +554,11 @@ int main(int argc, char** argv) {
     std::cout
         << "Realtime enforcement: "
         << (config.realtime_enforced ? "ON" : "OFF (diagnostic)") << '\n'
+        << "Telemetry CSV: "
+        << (options.telemetry_csv.empty() ? "OFF" : options.telemetry_csv)
+        << (options.telemetry_csv.empty()
+                ? "\n"
+                : " at " + std::to_string(options.telemetry_rate_hz) + " Hz\n")
         << "Waiting for filtered tracker packets and robot state...\n";
 
     // Load kinematic model once, outside the real-time callback.
@@ -460,6 +570,10 @@ int main(int argc, char** argv) {
     std::mutex rt_diag_mutex;
     RtDiagnostics shared_rt_diag{};
 
+    std::mutex telemetry_mutex;
+    TelemetrySnapshot shared_telemetry{};
+    const auto telemetry_epoch = Clock::now();
+
     std::mutex log_mutex;
     std::mutex failure_mutex;
     std::exception_ptr worker_failure;
@@ -470,6 +584,60 @@ int main(int argc, char** argv) {
     TrackerPositionFilter filter(
         config.filter,
         servo.reference_camera_rotation_R_CT());
+
+    std::thread telemetry_writer;
+    if (!options.telemetry_csv.empty()) {
+      telemetry_writer = std::thread([&]() {
+        try {
+          std::ofstream out(options.telemetry_csv, std::ios::trunc);
+          if (!out) {
+            throw std::runtime_error(
+                "Unable to open telemetry CSV: " + options.telemetry_csv);
+          }
+          write_telemetry_header(out);
+          out.flush();
+
+          const auto telemetry_period = std::chrono::duration<double>(
+              1.0 / options.telemetry_rate_hz);
+          auto next_write = Clock::now();
+          std::uint64_t last_sequence = 0;
+          std::size_t rows_since_flush = 0;
+
+          while (worker_running.load(std::memory_order_relaxed) &&
+                 !g_stop_requested.load(std::memory_order_relaxed)) {
+            const auto now = Clock::now();
+            if (now < next_write) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(1));
+              continue;
+            }
+
+            TelemetrySnapshot sample{};
+            {
+              std::lock_guard<std::mutex> lock(telemetry_mutex);
+              sample = shared_telemetry;
+            }
+            if (sample.sequence != 0 && sample.sequence != last_sequence) {
+              write_telemetry_row(out, sample);
+              last_sequence = sample.sequence;
+              if (++rows_since_flush >= 5) {
+                out.flush();
+                rows_since_flush = 0;
+              }
+            }
+            next_write = now + std::chrono::duration_cast<Clock::duration>(
+                                   telemetry_period);
+          }
+          out.flush();
+        } catch (...) {
+          {
+            std::lock_guard<std::mutex> lock(failure_mutex);
+            worker_failure = std::current_exception();
+          }
+          worker_failed.store(true, std::memory_order_relaxed);
+          g_stop_requested.store(true, std::memory_order_relaxed);
+        }
+      });
+    }
 
     std::thread worker([&]() {
       try {
@@ -589,6 +757,38 @@ int main(int argc, char** argv) {
               arm_packets >= config.arm_valid_packets;
 
           command_mailbox.publish(command);
+
+          if (!options.telemetry_csv.empty() && telemetry_mutex.try_lock()) {
+            TelemetrySnapshot sample{};
+            sample.sequence = shared_telemetry.sequence + 1;
+            sample.time_s = seconds_between(now, telemetry_epoch);
+            sample.tracker_age_s = tracker_age_s;
+            sample.robot_age_s = robot_age_s;
+            sample.error_B_m = command.error_B_m;
+            sample.servo_velocity_B_mps = command.velocity_B_mps;
+            sample.accepted_packets = filter.accepted_packets();
+            sample.rejected_jumps = filter.rejected_jumps();
+            sample.rejected_invalid = filter.rejected_invalid();
+            sample.command_valid = command.valid;
+            sample.armed = command.armed;
+
+            if (tracker.available && tracker.packet.valid) {
+              sample.raw_tracker_p_CT_m =
+                  panda_tracker::transform_translation(tracker.packet.T_CT);
+              sample.raw_tracker_available = true;
+            }
+            if (filtered.available) {
+              sample.filtered_tracker_p_CT_m =
+                  panda_tracker::transform_translation(filtered.T_CT);
+              sample.filtered_tracker_available = true;
+            }
+            {
+              std::lock_guard<std::mutex> diag_lock(rt_diag_mutex);
+              sample.rt = shared_rt_diag;
+            }
+            shared_telemetry = sample;
+            telemetry_mutex.unlock();
+          }
 
           if (now >= next_log) {
             RtDiagnostics rt_diag{};
@@ -958,6 +1158,32 @@ int main(int argc, char** argv) {
                     jacobian, limited_qdot);
 
             if (rt_diag_mutex.try_lock()) {
+              shared_rt_diag.control_elapsed_s = control_elapsed_s;
+              shared_rt_diag.flange_position_B_m = flange_position_B;
+              for (std::size_t i = 0; i < 6; ++i) {
+                shared_rt_diag.raw_wrench[i] = state.O_F_ext_hat_K[i];
+                shared_rt_diag.corrected_wrench[i] =
+                    state.O_F_ext_hat_K[i] - wrench_bias[i];
+              }
+              for (std::size_t i = 0; i < 7; ++i) {
+                shared_rt_diag.external_joint_torque_nm[i] =
+                    state.tau_ext_hat_filtered[i];
+              }
+              shared_rt_diag.external_force_norm_n = std::sqrt(
+                  shared_rt_diag.corrected_wrench[0] *
+                      shared_rt_diag.corrected_wrench[0] +
+                  shared_rt_diag.corrected_wrench[1] *
+                      shared_rt_diag.corrected_wrench[1] +
+                  shared_rt_diag.corrected_wrench[2] *
+                      shared_rt_diag.corrected_wrench[2]);
+              shared_rt_diag.external_torque_norm_nm = std::sqrt(
+                  shared_rt_diag.corrected_wrench[3] *
+                      shared_rt_diag.corrected_wrench[3] +
+                  shared_rt_diag.corrected_wrench[4] *
+                      shared_rt_diag.corrected_wrench[4] +
+                  shared_rt_diag.corrected_wrench[5] *
+                      shared_rt_diag.corrected_wrench[5]);
+
               shared_rt_diag.requested_after_safety_B_mps = {{
                   target_twist[0], target_twist[1], target_twist[2]}};
               shared_rt_diag.shaped_cartesian_B_mps = {{
@@ -1056,6 +1282,7 @@ int main(int argc, char** argv) {
     worker_running.store(false, std::memory_order_relaxed);
     g_stop_requested.store(true, std::memory_order_relaxed);
     if (worker.joinable()) worker.join();
+    if (telemetry_writer.joinable()) telemetry_writer.join();
 
     if (stop_reason != StopReason::kNone) {
       std::cerr << std::fixed << std::setprecision(4)
