@@ -27,6 +27,7 @@ TrackerReceiver::TrackerReceiver(
   sockaddr_in address{};
   address.sin_family = AF_INET;
   address.sin_port = htons(port);
+
   if (inet_pton(AF_INET, bind_ip.c_str(), &address.sin_addr) != 1) {
     close(socket_fd_);
     socket_fd_ = -1;
@@ -43,9 +44,9 @@ TrackerReceiver::TrackerReceiver(
     throw std::runtime_error("Unable to bind tracker socket: " + message);
   }
 
-  const int current_flags = fcntl(socket_fd_, F_GETFL, 0);
-  if (current_flags < 0 ||
-      fcntl(socket_fd_, F_SETFL, current_flags | O_NONBLOCK) < 0) {
+  const int flags = fcntl(socket_fd_, F_GETFL, 0);
+  if (flags < 0 ||
+      fcntl(socket_fd_, F_SETFL, flags | O_NONBLOCK) < 0) {
     const std::string message = std::strerror(errno);
     close(socket_fd_);
     socket_fd_ = -1;
@@ -55,9 +56,7 @@ TrackerReceiver::TrackerReceiver(
 }
 
 TrackerReceiver::~TrackerReceiver() {
-  if (socket_fd_ >= 0) {
-    close(socket_fd_);
-  }
+  if (socket_fd_ >= 0) close(socket_fd_);
 }
 
 void TrackerReceiver::poll() {
@@ -65,6 +64,7 @@ void TrackerReceiver::poll() {
     std::array<std::uint8_t, 2048> buffer{};
     sockaddr_in source{};
     socklen_t source_size = sizeof(source);
+
     const ssize_t received = recvfrom(
         socket_fd_,
         buffer.data(),
@@ -74,14 +74,11 @@ void TrackerReceiver::poll() {
         &source_size);
 
     if (received < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return;
-      }
-      if (errno == EINTR) {
-        continue;
-      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+      if (errno == EINTR) continue;
       throw std::runtime_error(
-          std::string("Tracker recvfrom failed: ") + std::strerror(errno));
+          std::string("Tracker recvfrom failed: ") +
+          std::strerror(errno));
     }
 
     char source_text[INET_ADDRSTRLEN]{};
@@ -95,14 +92,18 @@ void TrackerReceiver::poll() {
     }
 
     const std::string source_ip = source_text;
-    if (!expected_source_ip_.empty() && source_ip != expected_source_ip_) {
+    if (!expected_source_ip_.empty() &&
+        source_ip != expected_source_ip_) {
       ++wrong_source_packets_;
       continue;
     }
 
     TaskPosePacket packet{};
     const DecodeStatus status = decode_task_pose(
-        buffer.data(), static_cast<std::size_t>(received), packet);
+        buffer.data(),
+        static_cast<std::size_t>(received),
+        packet);
+
     if (status != DecodeStatus::kOk) {
       ++rejected_packets_;
       last_decode_error_ = status;

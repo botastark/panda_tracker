@@ -30,7 +30,6 @@ class TrackerReceiver {
 
   ~TrackerReceiver();
 
-  // Drain all currently available UDP datagrams without blocking.
   void poll();
 
   TrackerSnapshot latest() const;
@@ -43,7 +42,7 @@ class TrackerReceiver {
 
  private:
   int socket_fd_{-1};
-  std::string expected_source_ip_;
+  std::string expected_source_ip_{};
   TrackerSnapshot snapshot_{};
   std::uint64_t accepted_packets_{0};
   std::uint64_t rejected_packets_{0};

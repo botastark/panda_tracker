@@ -1,0 +1,112 @@
+# Position-only PBVS test configuration.
+# One file replaces the old split PBVS + safety configs for this test executable.
+
+motion_enabled: true
+
+# Diagnostic setting used in the recent tests. Restore true for deployment on a
+# properly configured realtime host.
+realtime_enforced: false
+
+require_tracker_source_filter: true
+stop_on_tracking_loss: true
+stop_on_robot_contact: true
+worker_rate_hz: 100.0
+
+# ---------------------------------------------------------------------------
+# Gradual axis enable
+# Start X-only. Then test Y/Z individually if desired, then XY, then XYZ.
+# Orientation is intentionally not implemented in this build.
+# ---------------------------------------------------------------------------
+control_x: true
+control_y: true
+control_z: false
+
+# Position servo
+kp_position: 1.0
+max_linear_speed_mps: 0.0200
+max_linear_acceleration_mps2: 0.010
+max_linear_jerk_mps3: 0.050
+max_position_error_m: 0.400
+
+# Freshness / arming
+robot_state_timeout_s: 0.150
+tracker_timeout_s: 0.150
+tracking_loss_grace_s: 0.750
+command_timeout_s: 0.050
+arm_valid_packets: 5
+max_arm_wait_s: 15.0
+max_motion_runtime_s: 0.0
+max_stop_time_s: 2.0
+
+# ---------------------------------------------------------------------------
+# Incoming tracker filter
+# PTP2 carries T_CT. Only t_CT is trusted for this position-only experiment.
+# The raw PnP orientation is ignored.
+# ---------------------------------------------------------------------------
+filter_median_window_samples: 3
+filter_ema_alpha: 0.45
+filter_max_filtered_jump_m: 0.020
+
+# Physical flange travel from the first 1-kHz control sample.
+# These preserve the conservative first-test limits used previously.
+max_travel_m: [0.500, 0.500, 0.020]
+braking_margin_m: 0.005
+max_rotation_travel_deg: 2.0
+
+# Joint / torque safety
+max_start_joint_speed_radps: 0.050
+max_running_joint_speed_radps: 0.500
+max_abs_joint_torque_nm: [80, 80, 80, 80, 11, 11, 11]
+max_abs_external_joint_torque_nm: [4, 4, 4, 4, 3, 3, 3]
+max_abs_joint_torque_rate_nmps: [800, 800, 800, 800, 300, 300, 300]
+
+# Stationary wrench baseline. These are additional software gates; Panda native
+# collision/reflex behavior is not modified by this program.
+wrench_bias_enabled: true
+wrench_bias_settle_s: 1.0
+wrench_bias_samples: 100
+max_external_force_n: 15.0
+max_external_torque_nm: 3.0
+max_raw_external_force_n: 20.0
+max_raw_external_torque_nm: 10.0
+torque_speed_derate_ratio: 0.80
+torque_monitor_grace_s: 0.50
+torque_violation_cycles: 5
+
+# Diagnostic communication threshold used after the earlier ~0.94 success-rate
+# observations. This does not fix tracker filtering; it is only a comms gate.
+min_control_command_success_rate: 0.90
+communication_grace_s: 2.0
+
+stop_velocity_epsilon_mps: 0.00002
+stop_acceleration_epsilon_mps2: 0.0005
+
+# ---------------------------------------------------------------------------
+# Complete flange load: disabled-but-mounted Panda Hand + fingers + custom tool.
+#
+# This uses the last fully specified, internally consistent load/inertia block
+# previously provided (0.8876 kg). A later runtime showed a refined 0.884927472
+# kg / updated COM, but its matching inertia tensor was not present in the
+# provided files, so it is deliberately NOT invented here.
+# ---------------------------------------------------------------------------
+load_model_enabled: true
+load_model_includes_end_effector: true
+load_mass_kg: 0.8876
+load_com_F_m: [0.0104131232, 0.00200782971, 0.03766278]
+load_inertia_at_com_F_kg_m2: [0.00266306725, -0.000714542235, 0.0000240986646, -0.000714542235, 0.00256981408, 0.000134342278, 0.0000240986646, 0.000134342278, 0.00207874837]
+load_settle_s: 1.0
+max_preexisting_ee_mass_kg: 0.001
+
+# ---------------------------------------------------------------------------
+# Calibrated/measured geometry. Row-major 4x4 matrices.
+# Convention: T_XY = pose of Y expressed in X.
+# ---------------------------------------------------------------------------
+
+# Physical flange F -> stick S.
+T_FS_row_major: [0.7277492821704733, -0.6855555704774725, 0.019863083538750874, -0.007296210, 0.6856294247671111, 0.7279403600224679, 0.003888977228002077, 0.005149104, -0.01712525018447189, 0.010788514154718709, 0.9997951459016254, 0.280329360, 0.0, 0.0, 0.0, 1.0]
+
+# Camera C -> stick S.
+T_CS_row_major: [1.0, 0.0, 0.0, -0.040, 0.0, 1.0, 0.0, 0.000, 0.0, 0.0, 1.0, 0.183, 0.0, 0.0, 0.0, 1.0]
+
+# Desired target T -> stick S.
+T_TS_des_row_major: [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.050, 0.0, 0.0, 0.0, 1.0]

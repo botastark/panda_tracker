@@ -1,5 +1,7 @@
 #pragma once
 
+#include "panda_tracker/geometry.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -9,9 +11,18 @@ namespace panda_tracker {
 constexpr std::size_t kTaskPosePacketSize = 148;
 constexpr std::uint8_t kTaskPoseVersion = 2;
 
+// PTP2 wire packet.
+//
+// IMPORTANT: The 16-double matrix field is T_CT:
+// target frame T expressed in camera frame C.
+//
+// The binary layout is unchanged from the existing PTP2 packet:
+//   magic/version/valid/reserved/sequence/confidence/16 doubles.
+//
+// Renaming the C++ field to T_CT removes the old misleading robot-side T_TS
+// name without changing the UDP protocol.
 struct TaskPosePacket {
-  // Row-major T_TS: stick-tip frame S expressed in target frame T.
-  std::array<double, 16> T_TS{};
+  Transform T_CT{};
   std::uint64_t sequence_id{0};
   float confidence{0.0F};
   bool valid{false};
@@ -30,10 +41,6 @@ enum class DecodeStatus {
 };
 
 bool host_is_little_endian();
-
-bool is_finite_rigid_transform(
-    const std::array<double, 16>& transform,
-    double tolerance = 1e-6);
 
 DecodeStatus decode_task_pose(
     const std::uint8_t* data,

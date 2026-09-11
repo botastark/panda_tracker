@@ -1,184 +1,122 @@
-source /home/bota/panda_tracker/.venv/bin/activate
+# Panda position tracking
 
-sudo ss -lunp | grep -E ':(2600|6200|6500)\b'
-kill -CONT PID
-kill PID
+This folder contains position-tracking experiment.
 
-## Running PBVS Controller on Mujico simulator
-
-### MuJoCo simulator
-
-Start MuJoCo simulator so it publishes simulated `T_BE` and `T_TS`.
-
-```bash
-python simulation/simulated_explorer_tool.py \
-  --panda-xml mujoco_menagerie/franka_emika_panda/panda.xml \
-  --pbvs-config panda_pbvs_project/configs/pbvs_sim.json \
-  optional:
-  --headless \
-  --headless-duration 180
-
-```
-
-### PBVS controller
-
-```bash
-python panda_pbvs_project/run_control.py \
-  --backend sim \
-  --config panda_pbvs_project/configs/pbvs_sim.json
-```
-
-### Test predefined Triangle motion
-
-```bash
-python tests/predefined_triangle_trajectory.py \
-  --destination 127.0.0.1:6601 \
-  --rate 30 \
-  --repeat 1 \
-  --initial-hold 15 \
-  --center-pose \
-    0.0 \
-    0.554499507 \
-    0.294352422 \
-    0.0 \
-    0.0\
-    90.0
-```
-
-## Running the Physical Panda, Digital Twin, and PBVS Controller
-
-This setup runs the physical Panda, the MuJoCo digital twin, and the PBVS controller on the same computer.
-
-### UDP port layout
+## Files
 
 ```text
-Physical explorer
-    |
-    v
-0.0.0.0:6200  udp_pose_fanout.py
-    |---> 127.0.0.1:6201  run_control.py robot state
-    `---> 127.0.0.1:6202  MuJoCo digital-twin state
-
-MuJoCo digital twin
-    `---> 127.0.0.1:6501  run_control.py tracker pose
-
-run_control.py
-    `---> Panda command port 2600
+cpp/src/pbvs_robot_position.cpp
+        |
+        +-- tracker_receiver
+        |      +-- task_pose_protocol
+        |
+        +-- tracker_position_filter
+        |
+        +-- position_servo
+        |      +-- geometry
+        |
+        +-- robot_safety
+        |
+        +-- position_tracking_config
 ```
 
-Only the UDP fan-out process should bind to port `6200`.
+## controller
 
-### 1. Configure the physical Panda backend
-
-In `configs/pbvs_robot.json`, use:
-
-```json
-"panda_state_bind_ip": "127.0.0.1",
-"panda_state_port": 6201
-```
-
-Keep the Panda command settings unchanged.
-
-### 2. Start the UDP state fan-out
-
-From `panda_pbvs_project`:
-
-```bash
-python3 udp_pose_fanout.py \
-  --bind-ip 0.0.0.0 \
-  --bind-port 6200 \
-  --destination 127.0.0.1:6201 \
-  --destination 127.0.0.1:6202
-```
-
-Expected output:
+The tracker sends `T_CT`.
+Only target translation is trusted:
 
 ```text
-Listening for Panda state on 0.0.0.0:6200
-Forwarding to: 127.0.0.1:6201, 127.0.0.1:6202
-Expected packet: 24 bytes (<6f)
+T_CT translation
+ -> 5-sample median
+ -> EMA alpha 0.25
+ -> post-filter 50 mm sanity jump
+ -> fixed desired R_CT
 ```
 
-Once the physical explorer starts, the relay should report a nonzero forwarding rate.
-
-### 3. Start the physical Panda explorer
-
-```bash
-cd /opt/libfranka/fe_panda
-
-../build/fe_panda/explorer 1 0
-```
-
-Leave this process running.
-
-### 4. Start the MuJoCo digital twin
-
-If running MuJoCo as a mirror/visualizer:
-
-```bash
-python simulation/simulated_explorer_tool.py \
-  --panda-xml  mujoco_menagerie/franka_emika_panda/panda.xml \
-  --pbvs-config panda_pbvs_project/configs/pbvs_robot.json \
-  --real-state-bind-ip 127.0.0.1 \
-  --real-state-port 6202 \
-  --disable-task-pose-output
-```
-
-### 5. Start the PBVS controller
-
-```bash
-python panda_pbvs_project/run_control.py  \
-  --backend panda \
-  --config panda_pbvs_project/configs/pbvs_robot.json \
-  --tracker-bind-ip 127.0.0.1 \
-  --tracker-port 6501
-```
-
-The tracker port must match the simulator's `--tracker-port`.
-
-### 6. Check port ownership
-
-Before starting, or when debugging, run:
-
-```bash
-sudo ss -lunp | grep -E ':(2600|6200|6201|6202|6501)\b'
-```
-
-Expected listeners:
+The robot side then computes:
 
 ```text
-6200  udp_pose_fanout.py
-6201  run_control.py
-6202  simulated_explorer_holder_camera_udp_triangle.py
-6501  run_control.py
+T_TS = inverse(T_CT_filtered) * T_CS
 ```
 
-### Troubleshooting
+and the translational PBVS error is mapped from stick S to physical flange F,
+then into Panda base B.
 
-If the simulator reports:
+An axis mask selects the translation axes:
+
+```yaml
+control_x: true
+control_y: false
+control_z: false
+```
+
+The output is a Cartesian velocity command:
 
 ```text
-sync_error: |e_p|=inf m, |e_R|=inf deg
+[vx, vy, vz, 0, 0, 0]
 ```
+Orientation is intentionally not controlled in this version.
 
-then no valid physical-state packet has reached port `6202`.
+## Build
 
-Check the physical stream:
+From this folder:
 
 ```bash
-sudo tcpdump -ni any 'udp dst port 6200'
+cmake -S . -B build -DFranka_DIR=/opt/libfranka/build
+cmake --build build -j
 ```
 
-Check the forwarded streams:
+## Preflight
 
 ```bash
-sudo tcpdump -ni lo 'udp dst port 6201 or udp dst port 6202'
+./build/pbvs_robot_position \
+  --robot-ip 172.16.0.2 \
+  --config cpp/configs/position_tracking_test.yml \
+  --apply-load-model \
+  --preflight-only
 ```
 
-If `run_control.py` raises:
+## First X-only motion test
+
+```bash
+./build/pbvs_robot_position \
+  --robot-ip 172.16.0.2 \
+  --tracker-bind-ip 0.0.0.0 \
+  --tracker-source-ip 172.16.223.232 \
+  --tracker-port 5000 \
+  --config cpp/configs/position_tracking_test.yml \
+  --apply-load-model \
+  --enable-motion
+```
+
+## Load model
+
+The config contains the last complete mass + COM + inertia set available in the
+provided files:
 
 ```text
-OSError: [Errno 98] Address already in use
+mass = 0.8876 kg
 ```
 
-another process is already bound to the configured robot-state or tracker port. Stop the old process or correct the port assignments above.
+## Cartesian velocity rate limiting
+
+The executable uses its own conservative call to `franka::limitRate()` with the
+configured 0.5 mm/s, 2 mm/s^2 and 20 mm/s^3 translational limits.
+
+The enclosing `robot.control()` therefore has libfranka's second built-in rate
+limiter disabled and uses `franka::kMaxCutoffFrequency` to disable the command
+low-pass filter. This avoids running a manually rate-limited signal through a
+second rate limiter/filter.
+
+The 1-kHz callback also publishes non-blocking diagnostics. The 1-Hz worker log
+shows:
+
+- `safety_scale`
+- `rt_req_mmps`
+- `limited_mmps`
+- `O_dP_EE_c_mmps`
+- `O_ddP_EE_c_mmps2`
+- `cmd_success`
+
+These distinguish the PBVS request from the velocity actually being handed to
+libfranka.
