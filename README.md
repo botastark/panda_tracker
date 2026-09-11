@@ -1,6 +1,12 @@
 # Panda position tracking
 
-This folder contains position-tracking experiment.
+Franka Panda position-based visual servoing (PBVS) experiment (for now only translation).
+
+The current robot motion generator uses joint velocity control. A desired
+Cartesian translation velocity is mapped through the Panda flange translational
+Jacobian and then explicitly limited in joint velocity, joint acceleration, and
+joint jerk before being sent to libfranka.
+
 
 ## Files
 
@@ -15,6 +21,8 @@ cpp/src/pbvs_robot_position.cpp
         +-- position_servo
         |      +-- geometry
         |
+        +-- joint_velocity_mapper
+        |
         +-- robot_safety
         |
         +-- position_tracking_config
@@ -23,11 +31,10 @@ cpp/src/pbvs_robot_position.cpp
 ## controller
 
 The tracker sends `T_CT`.
-Only target translation is trusted:
 
 ```text
 T_CT translation
- -> 5-sample median
+ -> N-sample median
  -> EMA alpha 0.25
  -> post-filter 50 mm sanity jump
  -> fixed desired R_CT
@@ -55,7 +62,6 @@ The output is a Cartesian velocity command:
 ```text
 [vx, vy, vz, 0, 0, 0]
 ```
-Orientation is intentionally not controlled in this version.
 
 ## Build
 
@@ -84,7 +90,7 @@ cmake --build build -j
   --tracker-bind-ip 0.0.0.0 \
   --tracker-source-ip 172.16.223.232 \
   --tracker-port 5000 \
-  --config cpp/configs/position_tracking_xy_joint_velocity_active_zhold_v2.yml \
+  --config cpp/configs/position_tracking_xy.yml \
   --apply-load-model \
   --recover \
   --enable-motion \
