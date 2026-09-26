@@ -68,7 +68,7 @@ cmake --build build -j
 ```bash
 ./build/pbvs_robot_position \
   --robot-ip 172.16.0.2 \
-  --config cpp/configs/position_tracking_test.yml \
+  --config cpp/configs/position_tracking_xyz.yml \
   --apply-load-model \
   --preflight-only
 ```
