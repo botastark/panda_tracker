@@ -9,7 +9,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Threads REQUIRED)
 find_package(Franka REQUIRED)
 
-
+add_executable(pbvs_robot_position
+    cpp/src/geometry.cpp
+    cpp/src/task_pose_protocol.cpp
+    cpp/src/tracker_receiver.cpp
+    cpp/src/position_tracking_config.cpp
+    cpp/src/tracker_position_filter.cpp
+    cpp/src/position_servo.cpp
+    cpp/src/robot_safety.cpp
+    cpp/src/pbvs_robot_position.cpp
+)
 add_executable(pbvs_robot_position
     cpp/src/geometry.cpp
     cpp/src/task_pose_protocol.cpp
